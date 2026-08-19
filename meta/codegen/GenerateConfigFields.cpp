@@ -45,14 +45,14 @@ int main()
    gen.field("tuneMirrorTimestamps",         "true",   CFGTYPE_BOOL);
    gen.field("tuneDisposalGCPeriod",         "0",      CFGTYPE_UINT); //  sleep between disposal garbage collector runs [seconds] = disabled
    gen.field("tuneChunkBalanceQueueLimit",       "100000", CFGTYPE_UINT);
-   gen.field("tuneChunkBalanceLockingTimeLimit", "300",    CFGTYPE_UINT);
+   gen.field("tuneChunkBalanceLockingTimeLimit", "21600",  CFGTYPE_UINT);
    gen.field("quotaEarlyChownResponse",      "true",   CFGTYPE_BOOL); //  true to send response before chunk files chown
    gen.field("quotaEnableEnforcement",       "false",  CFGTYPE_BOOL);
    gen.field("sysTargetOfflineTimeoutSecs",  "180",    CFGTYPE_UINT);
    gen.field("sysAllowUserSetPattern",       "false",  CFGTYPE_BOOL);
    gen.field("sysFileEventLogTarget",        "",       CFGTYPE_STRING);
    gen.field("sysFileEventPersistDirectory", "",       CFGTYPE_STRING);
-   gen.field("sysFileEventPersistSize",      "0",      CFGTYPE_INT64);
+   gen.field("sysFileEventPersistSize",      "0",      CFGTYPE_INT64, CFGFLAG_HUMAN_READABLE_SIZE);
    gen.field("runDaemonized",                "false",  CFGTYPE_BOOL);
    gen.field("limitXAttrListLength",         "false",  CFGTYPE_BOOL);
    gen.field("pidFile",                      "",       CFGTYPE_STRING);

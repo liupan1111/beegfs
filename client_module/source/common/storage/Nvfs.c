@@ -44,7 +44,15 @@ int REGISTER_FUNC (struct nvfs_dma_rw_ops *ops)
    }
    return -ENOTSUPP;
 }
-EXPORT_SYMBOL(REGISTER_FUNC);
+/* 
+ * BeeGFS hooks were originally exported with plain `EXPORT_SYMBOL`, but that lookup now fails on
+ * newer kernels due to a kernel change that restricts the mechanism `nvidia_fs` uses to locate our
+ * registration hooks (`symbol_get()`) to only resolve `EXPORT_SYMBOL_GPL` symbols:
+ * https://github.com/torvalds/linux/commit/9011e49d54dc. The BeeGFS client module is already GPLv2,
+ * so we could have been using `EXPORT_SYMBOL_GPL` all along, but it looks like NVIDIA's early
+ * reference implementations for GDS steered developers towards `EXPORT_SYMBOL`.
+ */
+EXPORT_SYMBOL_GPL(REGISTER_FUNC);
 
 void UNREGISTER_FUNC (void)
 {
@@ -65,6 +73,7 @@ void UNREGISTER_FUNC (void)
                       __func__, __LINE__);
 
 }
-EXPORT_SYMBOL(UNREGISTER_FUNC);
+/* Do not revert to EXPORT_SYMBOL. See the note on REGISTER_FUNC above */
+EXPORT_SYMBOL_GPL(UNREGISTER_FUNC);
 
 #endif /* BEEGFS_NVFS */

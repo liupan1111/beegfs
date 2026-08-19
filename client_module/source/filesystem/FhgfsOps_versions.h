@@ -6,7 +6,6 @@
 #include <linux/version.h>
 #include <linux/fs.h>
 #include <linux/vfs.h>
-#include <linux/pagevec.h>
 #include <linux/pagemap.h>
 #include <linux/page-flags.h>
 
