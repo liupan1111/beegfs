@@ -7,6 +7,12 @@ COMMON_CODEGEN_OUTPUTS = \
 	../generated/CommonConfigFields.h \
 	../generated/CommonConfigFields.inc
 
+../source/common/toolkit/ring/rte_ring_standalone.c.o: ../source/common/toolkit/ring/rte_ring_standalone.c
+	@echo "[CC]    $<"
+	$V$(CC) -std=c11 -D_GNU_SOURCE -D_LARGEFILE64_SOURCE -D_FILE_OFFSET_BITS=64 -fPIC \
+		-Wall -Wextra -Wno-unused-parameter -MMD -MF$<.d -MT$<.o -MP -o$<.o \
+		-c $(realpath $<)
+
 $(call build-codegen,\
    ../build/CommonConfigFields_generate,\
    $(COMMON_CODEGEN_SOURCES),\
@@ -16,7 +22,8 @@ $(call build-codegen,\
 
 $(call build-static-library,\
    beegfs-common,\
-   $(shell find ../source/common -iname '*.cpp'),\
+   $(shell find ../source/common -iname '*.cpp') \
+      ../source/common/toolkit/ring/rte_ring_standalone.c,\
    beegfs-base dl nl3-route,\
    ../source,\
    $(COMMON_CODEGEN_OUTPUTS))

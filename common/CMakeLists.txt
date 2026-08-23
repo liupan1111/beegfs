@@ -19,6 +19,8 @@ add_library(
 	./source/common/Assert.cpp
 	./source/common/Common.cpp
 	./source/common/toolkit/StorageTk.h
+	./source/common/toolkit/ring/rte_ring_standalone.h
+	./source/common/toolkit/ring/rte_ring_standalone.c
 	./source/common/toolkit/RandomReentrant.h
 	./source/common/toolkit/FsckTk.cpp
 	./source/common/toolkit/HashTk.h
@@ -365,6 +367,9 @@ add_library(
 	./source/common/components/TimerQueue.h
 	./source/common/components/worker/WriteLocalFileWork.h
 	./source/common/components/worker/queue/MultiWorkQueue.cpp
+	./source/common/components/worker/queue/RteRingQueue.h
+	./source/common/components/worker/queue/RteRingQueue.cpp
+	./source/common/components/worker/queue/IOWorkerQueues.h
 	./source/common/components/worker/queue/ListWorkContainer.h
 	./source/common/components/worker/queue/UserWorkContainer.h
 	./source/common/components/worker/queue/StreamListenerWorkQueue.h
@@ -548,6 +553,7 @@ if(NOT BEEGFS_SKIP_TESTS)
 		./tests/TestStripePattern.cpp
 		./tests/TestListTk.cpp
 		./tests/TestTimerQueue.cpp
+		./tests/TestRteRingQueue.cpp
 	)
 
 	target_link_libraries(
