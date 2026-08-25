@@ -369,7 +369,7 @@ add_library(
 	./source/common/components/worker/queue/MultiWorkQueue.cpp
 	./source/common/components/worker/queue/RteRingQueue.h
 	./source/common/components/worker/queue/RteRingQueue.cpp
-	./source/common/components/worker/queue/IOWorkerQueues.h
+	./source/common/components/worker/queue/IOWorkerContext.h
 	./source/common/components/worker/queue/ListWorkContainer.h
 	./source/common/components/worker/queue/UserWorkContainer.h
 	./source/common/components/worker/queue/StreamListenerWorkQueue.h
@@ -554,6 +554,7 @@ if(NOT BEEGFS_SKIP_TESTS)
 		./tests/TestListTk.cpp
 		./tests/TestTimerQueue.cpp
 		./tests/TestRteRingQueue.cpp
+		./tests/TestStreamListenerIOResponse.cpp
 	)
 
 	target_link_libraries(

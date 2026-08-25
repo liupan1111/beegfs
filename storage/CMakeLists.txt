@@ -98,6 +98,8 @@ add_library(
 	./source/components/DatagramListener.cpp
 	./source/components/worker/StorageBenchWork.cpp
 	./source/components/worker/StorageBenchWork.h
+	./source/components/worker/StorageIOWorkerRouter.h
+	./source/components/worker/StorageIOWorkerRouter.cpp
 	./source/components/benchmarker/StorageBenchOperator.cpp
 	./source/components/benchmarker/StorageBenchOperator.h
 	./source/components/benchmarker/StorageBenchSlave.cpp
@@ -170,6 +172,7 @@ if(NOT BEEGFS_SKIP_TESTS)
 		test-storage
 		./tests/TestConfig.h
 		./tests/TestConfig.cpp
+		./tests/TestStorageIOWorkerRouter.cpp
 	)
 
 	target_link_libraries(

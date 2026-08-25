@@ -1,6 +1,7 @@
 #include <common/system/System.h>
 #include "RteRingQueue.h"
 
+#include <assert.h>
 #include <errno.h>
 #include <sched.h>
 #include <sys/eventfd.h>
@@ -39,6 +40,8 @@ void RteRingQueue::enqueueWait(void* item)
 
    while(rte_ring_enqueue(ring, item) == -ENOBUFS)
    {
+      assert(false && "RteRingQueue is full.");
+
       if((++spins & 0x3f) == 0)
          sched_yield();
    }
