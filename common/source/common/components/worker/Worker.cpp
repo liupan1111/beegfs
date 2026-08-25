@@ -1,5 +1,13 @@
 #include <common/toolkit/TimeFine.h>
+#include <common/components/worker/queue/RteRingQueue.h>
 #include "Worker.h"
+
+#include <errno.h>
+#include <sys/epoll.h>
+#include <unistd.h>
+
+#define WORKER_IO_EPOLL_EVENTS 1
+#define WORKER_IO_DEQUEUE_BURST 64
 
 Worker::Worker(const std::string& workerID, MultiWorkQueue* workQueue, QueueWorkType workType)
     : PThread(workerID),
@@ -11,6 +19,7 @@ Worker::Worker(const std::string& workerID, MultiWorkQueue* workQueue, QueueWork
       bufOut(NULL),
       workQueue(workQueue),
       workType(workType),
+      ioContext(NULL),
       personalWorkQueue(new PersonalWorkQueue() )
 {
    HighResolutionStatsTk::resetStats(&this->stats);
@@ -36,6 +45,9 @@ void Worker::run()
       if(workType == QueueWorkType_INDIRECT)
          workLoop(QueueWorkType_INDIRECT);
       else
+      if(workType == QueueWorkType_IO)
+         workLoop(QueueWorkType_IO);
+      else
          throw ComponentInitException(
             "Unknown/invalid work type given: " + StringTk::intToStr(workType) );
 
@@ -48,77 +60,161 @@ void Worker::run()
 
 }
 
+int Worker::initIOEpollFD()
+{
+   if(!ioContext)
+      throw ComponentInitException("IO worker has no queue context.");
+
+   int epollFD = epoll_create(2);
+   if(epollFD == -1)
+      throw ComponentInitException("Unable to create IO worker epoll fd: " + System::getErrString());
+
+   struct epoll_event event;
+   event.events = EPOLLIN;
+   event.data.ptr = ioContext->requestQueue.get();
+   if(epoll_ctl(epollFD, EPOLL_CTL_ADD, ioContext->requestQueue->getEventFD(), &event) == -1)
+   {
+      close(epollFD);
+      throw ComponentInitException("Unable to add request eventfd: " + System::getErrString());
+   }
+
+   return epollFD;
+}
+
+void Worker::waitForIOWorks(int epollFD, WorkList& outWorks)
+{
+   for(;;)
+   {
+      struct epoll_event events[WORKER_IO_EPOLL_EVENTS];
+      int epollRes = epoll_wait(epollFD, events, WORKER_IO_EPOLL_EVENTS, -1);
+
+      if(unlikely(epollRes < 0) )
+      {
+         if(errno == EINTR)
+            continue;
+
+         close(epollFD);
+         throw WorkerException("Unrecoverable IO worker epoll_wait error: " +
+            System::getErrString());
+      }
+
+      for(int i = 0; i < epollRes; i++)
+      {
+         RteRingQueue* queue = (RteRingQueue*)events[i].data.ptr;
+         queue->drainEventFD();
+      }
+
+      drainIOQueue(ioContext->requestQueue.get(), outWorks);
+
+      if(!outWorks.empty() )
+         return;
+   }
+}
+
+void Worker::drainIOQueue(RteRingQueue* queue, WorkList& outWorks)
+{
+   void* items[WORKER_IO_DEQUEUE_BURST];
+
+   for(;;)
+   {
+      unsigned numItems = queue->dequeueBurst(items, WORKER_IO_DEQUEUE_BURST);
+      if(!numItems)
+         return;
+
+      for(unsigned i = 0; i < numItems; i++)
+         outWorks.push_back((Work*)items[i]);
+   }
+}
+
 void Worker::workLoop(QueueWorkType workType)
 {
    LOG(WORKQUEUES, DEBUG, "Ready", ("TID", System::getTID()), workType);
 
-   workQueue->incNumWorkers(); // add this worker to queue stats
+   const bool isIOWorkType = workType == QueueWorkType_IO;
+   int ioEpollFD = -1;
+
+   if(isIOWorkType)
+      ioEpollFD = initIOEpollFD();
+   else
+      workQueue->incNumWorkers(); // add this worker to queue stats
 
    while(!getSelfTerminate() || !maySelfTerminateNow() )
    {
-      Work* work = waitForWorkByType(stats, personalWorkQueue, workType);
+      WorkList readyWorks;
 
-#ifdef BEEGFS_DEBUG_PROFILING
-      TimeFine workStartTime;
-#endif
-
-      HighResolutionStatsTk::resetStats(&stats); // prepare stats
-
-      // process the work packet
-      work->process(bufIn, bufInLen, bufOut, bufOutLen);
-
-      // update stats
-      stats.incVals.workRequests = 1;
-      HighResolutionStatsTk::addHighResIncStats(*work->getHighResolutionStats(), stats);
-
-#ifdef BEEGFS_DEBUG_PROFILING
-      TimeFine workEndTime;
-      const auto workElapsedMS = workEndTime.elapsedSinceMS(&workStartTime);
-      const auto workLatencyMS = workEndTime.elapsedSinceMS(work->getAgeTime());
-
-      if (workElapsedMS >= 10)
-      {
-         if (workLatencyMS >= 10)
-            LOG(WORKQUEUES, DEBUG, "Work processed.",
-                  ("Elapsed ms", workElapsedMS), ("Total latency (ms)", workLatencyMS));
-         else
-            LOG(WORKQUEUES, DEBUG, "Work processed.", ("Elapsed ms", workElapsedMS),
-                  ("Total latency (us)", workEndTime.elapsedSinceMicro(work->getAgeTime())));
-      }
+      if(isIOWorkType)
+         waitForIOWorks(ioEpollFD, readyWorks);
       else
-      {
-         if (workLatencyMS >= 10)
-         {
-            LOG(WORKQUEUES, DEBUG, "Work processed.",
-                  ("Elapsed us", workEndTime.elapsedSinceMicro(&workStartTime)),
-                  ("Total latency (ms)", workEndTime.elapsedSinceMS(work->getAgeTime())));
+         waitForWorkByType(stats, personalWorkQueue, workType, readyWorks);
 
+      for(WorkListIter iter = readyWorks.begin(); iter != readyWorks.end(); iter++)
+      {
+         Work* work = *iter;
+#ifdef BEEGFS_DEBUG_PROFILING
+         TimeFine workStartTime;
+#endif
+
+         HighResolutionStatsTk::resetStats(&stats); // prepare stats
+
+         // process the work packet
+         work->process(bufIn, bufInLen, bufOut, bufOutLen);
+
+         // update stats
+         stats.incVals.workRequests = 1;
+         HighResolutionStatsTk::addHighResIncStats(*work->getHighResolutionStats(), stats);
+
+#ifdef BEEGFS_DEBUG_PROFILING
+         TimeFine workEndTime;
+         const auto workElapsedMS = workEndTime.elapsedSinceMS(&workStartTime);
+         const auto workLatencyMS = workEndTime.elapsedSinceMS(work->getAgeTime());
+
+         if (workElapsedMS >= 10)
+         {
+            if (workLatencyMS >= 10)
+               LOG(WORKQUEUES, DEBUG, "Work processed.",
+                     ("Elapsed ms", workElapsedMS), ("Total latency (ms)", workLatencyMS));
+            else
+               LOG(WORKQUEUES, DEBUG, "Work processed.", ("Elapsed ms", workElapsedMS),
+                     ("Total latency (us)", workEndTime.elapsedSinceMicro(work->getAgeTime())));
          }
          else
          {
-            LOG(WORKQUEUES, DEBUG, "Work processed.",
-                  ("Elapsed us", workEndTime.elapsedSinceMicro(&workStartTime)),
-                  ("Total latency (us)", workEndTime.elapsedSinceMicro(work->getAgeTime())));
+            if (workLatencyMS >= 10)
+            {
+               LOG(WORKQUEUES, DEBUG, "Work processed.",
+                     ("Elapsed us", workEndTime.elapsedSinceMicro(&workStartTime)),
+                     ("Total latency (ms)", workEndTime.elapsedSinceMS(work->getAgeTime())));
+
+            }
+            else
+            {
+               LOG(WORKQUEUES, DEBUG, "Work processed.",
+                     ("Elapsed us", workEndTime.elapsedSinceMicro(&workStartTime)),
+                     ("Total latency (us)", workEndTime.elapsedSinceMicro(work->getAgeTime())));
+            }
          }
-      }
 #endif
 
-      // cleanup
-      delete(work);
+         // cleanup
+         delete(work);
+      }
    }
+
+   if(ioEpollFD != -1)
+      close(ioEpollFD);
 }
 
-Work* Worker::waitForWorkByType(HighResolutionStats& newStats, PersonalWorkQueue* personalWorkQueue,
-   QueueWorkType workType)
+void Worker::waitForWorkByType(HighResolutionStats& newStats, PersonalWorkQueue* personalWorkQueue,
+   QueueWorkType workType, WorkList& outWorks)
 {
    /* note: we hope the if-conditions below are optimized away when this is called from
       Worker::workLoop(), that's why we have the explicit work type arg in Worker::run() */
 
    if(workType == QueueWorkType_DIRECT)
-      return workQueue->waitForDirectWork(newStats, personalWorkQueue);
+      outWorks.push_back(workQueue->waitForDirectWork(newStats, personalWorkQueue) );
    else
    if(workType == QueueWorkType_INDIRECT)
-      return workQueue->waitForAnyWork(newStats, personalWorkQueue);
+      outWorks.push_back(workQueue->waitForAnyWork(newStats, personalWorkQueue) );
    else // should never happen
       throw WorkerException("Unknown/invalid work type given: " + StringTk::intToStr(workType));
 }

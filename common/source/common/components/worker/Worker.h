@@ -2,6 +2,7 @@
 
 #include <common/app/log/LogContext.h>
 #include <common/app/AbstractApp.h>
+#include <common/components/worker/queue/IOWorkerContext.h>
 #include <common/components/worker/queue/MultiWorkQueue.h>
 #include <common/components/worker/queue/PersonalWorkQueue.h>
 #include <common/components/ComponentInitException.h>
@@ -40,6 +41,7 @@ class Worker : public PThread
 
       MultiWorkQueue* workQueue;
       QueueWorkType workType;
+      IOWorkerContext* ioContext;
 
       PersonalWorkQueue* personalWorkQueue;
 
@@ -49,8 +51,11 @@ class Worker : public PThread
       virtual void run();
 
       void workLoop(QueueWorkType workType);
-      Work* waitForWorkByType(HighResolutionStats& newStats, PersonalWorkQueue* personalWorkQueue,
-         QueueWorkType workType);
+      int initIOEpollFD();
+      void waitForIOWorks(int epollFD, WorkList& outWorks);
+      void drainIOQueue(RteRingQueue* queue, WorkList& outWorks);
+      void waitForWorkByType(HighResolutionStats& newStats, PersonalWorkQueue* personalWorkQueue,
+         QueueWorkType workType, WorkList& outWorks);
 
       void initBuffers();
 
@@ -81,6 +86,16 @@ class Worker : public PThread
       MultiWorkQueue* getWorkQueue() const
       {
          return this->workQueue;
+      }
+
+      void setIOWorkerContext(IOWorkerContext* ioContext)
+      {
+         this->ioContext = ioContext;
+      }
+
+      IOWorkerContext* getIOWorkerContext() const
+      {
+         return this->ioContext;
       }
 
       /**
