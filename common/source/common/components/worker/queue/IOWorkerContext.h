@@ -1,19 +1,22 @@
 #pragma once
 
+#include <common/components/worker/queue/RteRingQueue.h>
 #include <common/Common.h>
 
-class RteRingQueue;
+#include <memory>
+
 class Socket;
 
-struct IOWorkerQueues
+struct IOWorkerContext
 {
    uint16_t osdID;
    unsigned workerIndex;
    unsigned listenerIndex;
 
-   RteRingQueue* requestQueue;
-   RteRingQueue* responseQueue;
-   RteRingQueue* highPrioQueue;
+   std::unique_ptr<RteRingQueue> requestQueue;
+   std::unique_ptr<RteRingQueue> responseQueue;
+   std::unique_ptr<RteRingQueue> highPrioQueue;
+   size_t load;
 };
 
 struct IOWorkerResponse

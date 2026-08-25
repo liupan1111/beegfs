@@ -52,18 +52,21 @@ Use `eventfd` for wakeup and `epoll_wait` for IO worker waiting.
 Default capacities:
 
 ```text
-Request Ring: 128
-Response Ring: 128
-High-prio Ring: 128
+Request Ring: 16
+Response Ring: 16
+High-prio Ring: 16
 ```
 
-Use `RING_F_EXACT_SZ` so the configured capacity means 128 usable entries.
+Use `RING_F_EXACT_SZ` so the configured capacity means 16 usable entries.
 
 ### Ring Full Behavior
 
-When a ring is full, the producer waits until enqueue succeeds:
+During phase 1, a full ring is treated as a tuning failure and triggers an assertion. The
+spin/yield retry loop remains in place so it can be re-enabled after a reasonable queue depth has
+been validated:
 
 ```text
+assert on full ring
 short spin
 periodic sched_yield()
 retry until success
@@ -173,7 +176,7 @@ Group-local worker selection:
 
 ```text
 choose worker with the smallest load_map[osdID][workerIndex]
-if tied, use round-robin cursor as tie-breaker
+if tied, choose the first worker in the listener-local worker group
 ```
 
 Listener notification is batched per epoll batch:
@@ -238,12 +241,12 @@ class RteRingQueue
 };
 ```
 
-### IOWorkerQueues
+### IOWorkerContext
 
 Common queue context assigned to one IO worker.
 
 ```cpp
-struct IOWorkerQueues
+struct IOWorkerContext
 {
    uint16_t osdID;
    unsigned workerIndex;
@@ -318,7 +321,7 @@ storage/source/components/worker/StorageIOWorkerRouter.cpp
 
 Responsibilities:
 
-- create per-worker `IOWorkerQueues`
+- create per-worker `IOWorkerContext`
 - split workers into listener groups for each osdID
 - select best worker in listener group
 - enqueue request work
@@ -337,12 +340,12 @@ class StorageIOWorkerRouter
       StorageIOWorkerRouter(unsigned numListeners, unsigned numWorkersPerOSD);
 
       void addOSD(uint16_t osdID);
-      IOWorkerQueues* getWorkerQueues(uint16_t osdID, unsigned workerIndex);
+      IOWorkerContext* getWorkerContext(uint16_t osdID, unsigned workerIndex);
 
-      IOWorkerQueues* submit(uint16_t osdID, unsigned listenerIndex,
+      IOWorkerContext* submit(uint16_t osdID, unsigned listenerIndex,
          Work* work, unsigned userID);
 
-      std::vector<IOWorkerQueues*> getResponseQueuesForListener(unsigned listenerIndex) const;
+      std::vector<IOWorkerContext*> getResponseContextsForListener(unsigned listenerIndex) const;
 
       void complete(uint16_t osdID, unsigned workerIndex);
 
@@ -364,7 +367,7 @@ QueueWorkType_IO
 
 Storage ordinary IO workers are created with `QueueWorkType_IO`.
 
-`Worker` receives an `IOWorkerQueues*` context. `Worker` must not depend on `StorageIOWorkerRouter`.
+`Worker` receives an `IOWorkerContext*` context. `Worker` must not depend on `StorageIOWorkerRouter`.
 
 IO worker `epoll_wait` listens only to:
 
@@ -458,7 +461,7 @@ Storage IO worker response uses response ring/eventfd instead of pipe.
 Add listener-side support to register worker response eventfds:
 
 ```cpp
-void addIOWorkerResponseQueue(IOWorkerQueues* queues);
+void addIOWorkerResponseQueue(IOWorkerContext* queues);
 ```
 
 Listener epoll must distinguish:
@@ -524,7 +527,7 @@ streamListenersInit()
 workersInit()
   create StorageIOWorkerRouter
   create per-target worker queue contexts
-  create storage IO Workers with QueueWorkType_IO and IOWorkerQueues*
+  create storage IO Workers with QueueWorkType_IO and IOWorkerContext*
 
 before starting stream listeners
   each listener registers its response eventfds from router
@@ -675,7 +678,7 @@ common/source/common/toolkit/ring/rte_ring_standalone.h
 common/source/common/toolkit/ring/rte_ring_standalone.c
 common/source/common/components/worker/queue/RteRingQueue.h
 common/source/common/components/worker/queue/RteRingQueue.cpp
-common/source/common/components/worker/queue/IOWorkerQueues.h
+common/source/common/components/worker/queue/IOWorkerContext.h
 ```
 
 Common modifications:
