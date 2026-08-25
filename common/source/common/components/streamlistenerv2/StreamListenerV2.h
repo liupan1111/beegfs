@@ -2,6 +2,8 @@
 
 #include <common/app/log/LogContext.h>
 #include <common/components/worker/queue/StreamListenerWorkQueue.h>
+#include <common/components/worker/queue/IOWorkerContext.h>
+#include <common/components/worker/queue/RteRingQueue.h>
 #include <common/components/ComponentInitException.h>
 #include <common/net/sock/StandardSocket.h>
 #include <common/net/sock/RDMASocket.h>
@@ -11,6 +13,8 @@
 #include <common/toolkit/poll/PollList.h>
 #include <common/toolkit/Pipe.h>
 #include <common/Common.h>
+
+#include <set>
 
 class AbstractApp; // forward declaration
 class IncomingPreprocessedMsgWork;
@@ -64,6 +68,7 @@ class StreamListenerV2 : public PThread
       int               epollFD;
       PollList          pollList;
       Pipe*             sockReturnPipe;
+      std::set<RteRingQueue*> ioWorkerResponseQueues;
 
       Time              rdmaCheckT;
       int               rdmaCheckForceCounter;
@@ -78,9 +83,11 @@ class StreamListenerV2 : public PThread
 
       void onIncomingData(Socket* sock);
       void onSockReturn();
+      void onIOWorkerResponse(RteRingQueue* responseQueue);
       void rdmaConnIdleCheck();
 
       bool isFalseAlarm(RDMASocket* sock);
+      void rearmSocket(Socket* sock);
 
       void deleteAllConns();
 
@@ -91,6 +98,8 @@ class StreamListenerV2 : public PThread
       {
          return sockReturnPipe->getWriteFD();
       }
+
+      void addIOWorkerResponseQueue(RteRingQueue* responseQueue);
 
       /**
        * Only effective when set before running this component.
@@ -119,4 +128,12 @@ class StreamListenerV2 : public PThread
       virtual void flushIncomingWorkNotifications()
       {
       }
+
+      virtual void onIOWorkerResponseDequeued(IOWorkerResponse* response)
+      {
+         IGNORE_UNUSED_VARIABLE(response);
+      }
+
+      void handleIOWorkerResponse(IOWorkerResponse* response);
 };
+

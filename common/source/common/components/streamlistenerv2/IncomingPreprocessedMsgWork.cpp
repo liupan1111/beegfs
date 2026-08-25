@@ -38,6 +38,7 @@ void IncomingPreprocessedMsgWork::process(char* bufIn, unsigned bufInLen,
 
          sock->unsetStats();
          invalidateConnection(sock);
+         sock = NULL;
 
          return;
       }
@@ -62,6 +63,7 @@ void IncomingPreprocessedMsgWork::process(char* bufIn, unsigned bufInLen,
 
          sock->unsetStats();
          invalidateConnection(sock);
+         sock = NULL;
          return;
       }
 
@@ -98,11 +100,12 @@ void IncomingPreprocessedMsgWork::process(char* bufIn, unsigned bufInLen,
             sock->getPeername() );
 
          invalidateConnection(sock);
+         sock = NULL;
 
          return;
       }
 
-      releaseSocket(app, &sock, NULL);
+      releaseSocket(NULL);
 
       return;
 
@@ -130,7 +133,27 @@ void IncomingPreprocessedMsgWork::process(char* bufIn, unsigned bufInLen,
    {
       sock->unsetStats();
       invalidateConnection(sock);
+      sock = NULL;
    }
+}
+
+IOWorkerResponse* IncomingPreprocessedMsgWork::detachIOWorkerResponse(uint16_t osdID,
+   unsigned workerIndex)
+{
+   Socket* responseSock = sock;
+   sock = NULL;
+
+   return new IOWorkerResponse(responseSock, osdID, workerIndex, hasImmediateData);
+}
+
+void IncomingPreprocessedMsgWork::releaseSocket(NetMessage* msg)
+{
+   if(msg)
+      msg->setReleaseSockAfterProcessing(false);
+
+   sock->unsetStats();
+
+   this->hasImmediateData = checkRDMASocketImmediateData();
 }
 
 /**
@@ -252,6 +275,41 @@ bool IncomingPreprocessedMsgWork::checkRDMASocketImmediateData(AbstractApp* app,
    delete(sock);
 
    return true;
+}
+
+bool IncomingPreprocessedMsgWork::checkRDMASocketImmediateData()
+{
+   const char* logContextStr = "Work (incoming data => check RDMA immediate data)";
+
+   if(sock->getSockType() != NICADDRTYPE_RDMA)
+      return false;
+
+   try
+   {
+      RDMASocket* rdmaSock = (RDMASocket*)sock;
+
+      if(!rdmaSock->nonblockingRecvCheck() )
+         return false;
+
+      LOG_DEBUG(logContextStr, Log_SPAM,
+         std::string("Got immediate data: ") + sock->getPeername() );
+
+      return true;
+   }
+   catch(SocketDisconnectException& e)
+   {
+      LogContext(logContextStr).log(Log_DEBUG, std::string(e.what() ) );
+   }
+   catch(SocketException& e)
+   {
+      LogContext(logContextStr).log(Log_NOTICE,
+         std::string("Connection error: ") + sock->getPeername() + std::string(": ") +
+         std::string(e.what() ) );
+   }
+
+   delete(sock);
+   sock = NULL;
+   return false;
 }
 
 

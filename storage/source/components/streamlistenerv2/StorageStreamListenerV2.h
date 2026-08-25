@@ -24,6 +24,19 @@ class StorageStreamListenerV2 : public StreamListenerV2
 
       virtual ~StorageStreamListenerV2() {}
 
+      void registerIOWorkerResponseQueues()
+      {
+         StorageIOWorkerRouter* router = Program::getApp()->getIOWorkerRouter();
+         if(!router)
+            return;
+
+         std::vector<IOWorkerContext*> responseContexts =
+            router->getResponseContextsForListener(listenerIndex);
+
+         for(auto iter = responseContexts.begin(); iter != responseContexts.end(); iter++)
+            addIOWorkerResponseQueue((*iter)->responseQueue.get());
+      }
+
 
    protected:
       // getters & setters
@@ -54,7 +67,14 @@ class StorageStreamListenerV2 : public StreamListenerV2
          notifyContexts.clear();
       }
 
+      virtual void onIOWorkerResponseDequeued(IOWorkerResponse* response)
+      {
+         Program::getApp()->getIOWorkerRouter()->complete(response->osdID,
+            response->workerIndex);
+      }
+
    private:
       unsigned listenerIndex;
       std::set<IOWorkerContext*> notifyContexts;
 };
+
