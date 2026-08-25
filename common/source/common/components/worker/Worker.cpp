@@ -7,7 +7,7 @@
 #include <sys/epoll.h>
 #include <unistd.h>
 
-#define WORKER_IO_EPOLL_EVENTS 1
+#define WORKER_IO_EPOLL_EVENTS 2
 #define WORKER_IO_DEQUEUE_BURST 64
 
 Worker::Worker(const std::string& workerID, MultiWorkQueue* workQueue, QueueWorkType workType)
@@ -72,6 +72,14 @@ int Worker::initIOEpollFD()
 
    struct epoll_event event;
    event.events = EPOLLIN;
+   event.data.ptr = ioContext->highPrioQueue.get();
+   if(epoll_ctl(epollFD, EPOLL_CTL_ADD, ioContext->highPrioQueue->getEventFD(), &event) == -1)
+   {
+      close(epollFD);
+      throw ComponentInitException("Unable to add high-prio eventfd: " + System::getErrString());
+   }
+
+   event.events = EPOLLIN;
    event.data.ptr = ioContext->requestQueue.get();
    if(epoll_ctl(epollFD, EPOLL_CTL_ADD, ioContext->requestQueue->getEventFD(), &event) == -1)
    {
@@ -105,6 +113,7 @@ void Worker::waitForIOWorks(int epollFD, WorkList& outWorks)
          queue->drainEventFD();
       }
 
+      drainIOQueue(ioContext->highPrioQueue.get(), outWorks);
       drainIOQueue(ioContext->requestQueue.get(), outWorks);
 
       if(!outWorks.empty() )

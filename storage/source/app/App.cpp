@@ -836,7 +836,13 @@ void App::workersStop()
 
    for(WorkerListIter iter = workerList.begin(); iter != workerList.end(); iter++)
    {
-      (*iter)->getWorkQueue()->addDirectWork(new DummyWork() );
+      if((*iter)->getIOWorkerContext() )
+      {
+         (*iter)->getIOWorkerContext()->highPrioQueue->enqueueWait(new DummyWork() );
+         (*iter)->getIOWorkerContext()->highPrioQueue->notify();
+      }
+      else
+         (*iter)->getWorkQueue()->addDirectWork(new DummyWork() );
    }
 }
 
