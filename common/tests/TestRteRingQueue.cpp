@@ -1,4 +1,6 @@
 #include <common/components/worker/queue/RteRingQueue.h>
+#include <common/components/worker/queue/MultiWorkQueue.h>
+#include <common/components/worker/queue/PersonalWorkQueue.h>
 
 #include <gtest/gtest.h>
 
@@ -54,4 +56,31 @@ TEST(RteRingQueue, mpscModeAcceptsItems)
    ASSERT_EQ(queue.dequeueBurst(items, 2), 2u);
    EXPECT_EQ(items[0], &one);
    EXPECT_EQ(items[1], &two);
+}
+
+class QueueTestWork : public Work
+{
+   public:
+      virtual void process(char*, unsigned, char*, unsigned)
+      {
+      }
+};
+
+TEST(RteRingQueue, personalQueueCanForwardToHighPrioRing)
+{
+   RteRingQueue highPrio("test-high-prio", 8, RING_F_SC_DEQ | RING_F_EXACT_SZ);
+   PersonalWorkQueue personalQueue;
+   MultiWorkQueue workQueue;
+   QueueTestWork* work = new QueueTestWork();
+
+   personalQueue.setHighPrioQueue(&highPrio);
+   workQueue.addPersonalWork(work, &personalQueue);
+
+   EXPECT_EQ(highPrio.count(), 1u);
+
+   void* item = NULL;
+   ASSERT_EQ(highPrio.dequeueBurst(&item, 1), 1u);
+   EXPECT_EQ(item, work);
+
+   delete work;
 }
