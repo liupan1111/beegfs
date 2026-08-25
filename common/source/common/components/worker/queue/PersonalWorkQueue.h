@@ -1,6 +1,7 @@
 #pragma once
 
 #include <common/components/worker/Work.h>
+#include <common/components/worker/queue/RteRingQueue.h>
 #include <common/toolkit/NamedException.h>
 #include <common/Common.h>
 
@@ -26,7 +27,7 @@ class PersonalWorkQueue
                                    MultiWorkQueue mutex being held. */
 
    public:
-      PersonalWorkQueue() {}
+      PersonalWorkQueue() : highPrioQueue(NULL) {}
 
       ~PersonalWorkQueue()
       {
@@ -38,6 +39,7 @@ class PersonalWorkQueue
 
    private:
       WorkList workList;
+      RteRingQueue* highPrioQueue;
 
 
    private:
@@ -45,6 +47,13 @@ class PersonalWorkQueue
 
       void addWork(Work* work)
       {
+         if(highPrioQueue)
+         {
+            highPrioQueue->enqueueWait(work);
+            highPrioQueue->notify();
+            return;
+         }
+
          workList.push_back(work);
       }
 
@@ -71,6 +80,17 @@ class PersonalWorkQueue
       size_t getWorkListSize()
       {
          return workList.size();
+      }
+
+   public:
+      void setHighPrioQueue(RteRingQueue* highPrioQueue)
+      {
+         this->highPrioQueue = highPrioQueue;
+      }
+
+      bool hasHighPrioQueue() const
+      {
+         return highPrioQueue != NULL;
       }
 
 };

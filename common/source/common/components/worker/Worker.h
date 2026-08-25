@@ -91,6 +91,8 @@ class Worker : public PThread
       void setIOWorkerContext(IOWorkerContext* ioContext)
       {
          this->ioContext = ioContext;
+         this->personalWorkQueue->setHighPrioQueue(
+            ioContext ? ioContext->highPrioQueue.get() : NULL);
       }
 
       IOWorkerContext* getIOWorkerContext() const

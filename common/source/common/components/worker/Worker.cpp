@@ -6,7 +6,7 @@
 #include <sys/epoll.h>
 #include <unistd.h>
 
-#define WORKER_IO_EPOLL_EVENTS 1
+#define WORKER_IO_EPOLL_EVENTS 2
 #define WORKER_IO_DEQUEUE_BURST 64
 
 Worker::Worker(const std::string& workerID, MultiWorkQueue* workQueue, QueueWorkType workType)
@@ -71,6 +71,14 @@ int Worker::initIOEpollFD()
 
    struct epoll_event event;
    event.events = EPOLLIN;
+   event.data.ptr = ioContext->highPrioQueue.get();
+   if(epoll_ctl(epollFD, EPOLL_CTL_ADD, ioContext->highPrioQueue->getEventFD(), &event) == -1)
+   {
+      close(epollFD);
+      throw ComponentInitException("Unable to add high-prio eventfd: " + System::getErrString());
+   }
+
+   event.events = EPOLLIN;
    event.data.ptr = ioContext->requestQueue.get();
    if(epoll_ctl(epollFD, EPOLL_CTL_ADD, ioContext->requestQueue->getEventFD(), &event) == -1)
    {
@@ -98,10 +106,26 @@ void Worker::waitForIOWorks(int epollFD, WorkList& outWorks)
             System::getErrString());
       }
 
-      RteRingQueue* queue = (RteRingQueue*)events[0].data.ptr;
-      queue->drainEventFD();
+      bool gotHighPrio = false;
+      bool gotRequest = false;
 
-      drainIOQueue(ioContext->requestQueue.get(), outWorks);
+      for(int i = 0; i < epollRes; i++)
+      {
+         RteRingQueue* queue = (RteRingQueue*)events[i].data.ptr;
+         queue->drainEventFD();
+
+         if(queue == ioContext->highPrioQueue.get() )
+            gotHighPrio = true;
+         else
+         if(queue == ioContext->requestQueue.get() )
+            gotRequest = true;
+      }
+
+      if(gotHighPrio)
+         drainIOQueue(ioContext->highPrioQueue.get(), outWorks);
+
+      if(gotRequest)
+         drainIOQueue(ioContext->requestQueue.get(), outWorks);
 
       if(!outWorks.empty() )
          return;
