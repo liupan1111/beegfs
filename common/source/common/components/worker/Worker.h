@@ -2,6 +2,7 @@
 
 #include <common/app/log/LogContext.h>
 #include <common/app/AbstractApp.h>
+#include <common/components/worker/queue/IOWorkerAsyncContext.h>
 #include <common/components/worker/queue/IOWorkerContext.h>
 #include <common/components/worker/queue/MultiWorkQueue.h>
 #include <common/components/worker/queue/PersonalWorkQueue.h>
@@ -43,18 +44,35 @@ class Worker : public PThread
       QueueWorkType workType;
       IOWorkerContext* ioContext;
       static __thread IOWorkerContext* currentIOWorkerContext;
+      std::unique_ptr<IOWorkerAsyncContext> asyncContext;
 
       PersonalWorkQueue* personalWorkQueue;
 
       HighResolutionStats stats;
 
+      struct IOEventSource
+      {
+         enum Type
+         {
+            QUEUE,
+            AIO
+         };
+
+         Type type;
+         RteRingQueue* queue;
+
+         IOEventSource(Type type, RteRingQueue* queue = NULL) : type(type), queue(queue)
+         {
+         }
+      };
 
       virtual void run();
 
       void workLoop(QueueWorkType workType);
-      int initIOEpollFD();
+      int initIOEpollFD(IOEventSource* highPrioSource, IOEventSource* requestSource,
+         IOEventSource* aioSource);
       void waitForIOWorks(int epollFD, WorkList& outWorks);
-      void drainIOQueue(RteRingQueue* queue, WorkList& outWorks);
+      void drainIOQueue(RteRingQueue* queue, unsigned maxWorks, WorkList& outWorks);
       void waitForWorkByType(HighResolutionStats& newStats, PersonalWorkQueue* personalWorkQueue,
          QueueWorkType workType, WorkList& outWorks);
 
@@ -63,6 +81,9 @@ class Worker : public PThread
       // inliners
       bool maySelfTerminateNow()
       {
+         if(asyncContext && asyncContext->getNumActiveRequests())
+            return false;
+
          if(terminateWithFullQueue ||
             (!workQueue->getNumPendingWorks() &&
                workQueue->getIsPersonalQueueEmpty(personalWorkQueue) ) )

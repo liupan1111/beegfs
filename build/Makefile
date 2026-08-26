@@ -300,7 +300,7 @@ else
 
    $(call define-dep-lib, common,\
       -I $(BEEGFS_COMMON_PATH)/source, \
-      -ldl $(BEEGFS_COMMON_PATH)/build/libbeegfs-common.a)
+      -ldl $(BEEGFS_COMMON_PATH)/build/libbeegfs-common.a -laio)
 
    $(call define-dep-lib, client-devel,\
       -I $(BEEGFS_DEVEL_INCLUDE_PATH),)

@@ -7,7 +7,7 @@
 #include <sys/epoll.h>
 #include <unistd.h>
 
-#define WORKER_IO_EPOLL_EVENTS 2
+#define WORKER_IO_EPOLL_EVENTS 3
 #define WORKER_IO_DEQUEUE_BURST 64
 
 __thread IOWorkerContext* Worker::currentIOWorkerContext = NULL;
@@ -23,6 +23,7 @@ Worker::Worker(const std::string& workerID, MultiWorkQueue* workQueue, QueueWork
       workQueue(workQueue),
       workType(workType),
       ioContext(NULL),
+      asyncContext(),
       personalWorkQueue(new PersonalWorkQueue() )
 {
    HighResolutionStatsTk::resetStats(&this->stats);
@@ -63,18 +64,21 @@ void Worker::run()
 
 }
 
-int Worker::initIOEpollFD()
+int Worker::initIOEpollFD(IOEventSource* highPrioSource, IOEventSource* requestSource,
+   IOEventSource* aioSource)
 {
    if(!ioContext)
       throw ComponentInitException("IO worker has no queue context.");
+   if(!asyncContext)
+      throw ComponentInitException("IO worker has no async context.");
 
-   int epollFD = epoll_create(2);
+   int epollFD = epoll_create(WORKER_IO_EPOLL_EVENTS);
    if(epollFD == -1)
       throw ComponentInitException("Unable to create IO worker epoll fd: " + System::getErrString());
 
    struct epoll_event event;
    event.events = EPOLLIN;
-   event.data.ptr = ioContext->highPrioQueue.get();
+   event.data.ptr = highPrioSource;
    if(epoll_ctl(epollFD, EPOLL_CTL_ADD, ioContext->highPrioQueue->getEventFD(), &event) == -1)
    {
       close(epollFD);
@@ -82,11 +86,19 @@ int Worker::initIOEpollFD()
    }
 
    event.events = EPOLLIN;
-   event.data.ptr = ioContext->requestQueue.get();
+   event.data.ptr = requestSource;
    if(epoll_ctl(epollFD, EPOLL_CTL_ADD, ioContext->requestQueue->getEventFD(), &event) == -1)
    {
       close(epollFD);
       throw ComponentInitException("Unable to add request eventfd: " + System::getErrString());
+   }
+
+   event.events = EPOLLIN;
+   event.data.ptr = aioSource;
+   if(epoll_ctl(epollFD, EPOLL_CTL_ADD, asyncContext->getEventFD(), &event) == -1)
+   {
+      close(epollFD);
+      throw ComponentInitException("Unable to add aio eventfd: " + System::getErrString());
    }
 
    return epollFD;
@@ -96,6 +108,20 @@ void Worker::waitForIOWorks(int epollFD, WorkList& outWorks)
 {
    for(;;)
    {
+      unsigned availableSlots = asyncContext->getNumAvailableRequestSlots();
+      if(!getSelfTerminate() && availableSlots)
+      {
+         const size_t numWorks = outWorks.size();
+         drainIOQueue(ioContext->highPrioQueue.get(), availableSlots, outWorks);
+         availableSlots -= outWorks.size() - numWorks;
+
+         if(availableSlots)
+            drainIOQueue(ioContext->requestQueue.get(), availableSlots, outWorks);
+
+         if(!outWorks.empty())
+            return;
+      }
+
       struct epoll_event events[WORKER_IO_EPOLL_EVENTS];
       int epollRes = epoll_wait(epollFD, events, WORKER_IO_EPOLL_EVENTS, -1);
 
@@ -114,28 +140,45 @@ void Worker::waitForIOWorks(int epollFD, WorkList& outWorks)
 
       for(int i = 0; i < epollRes; i++)
       {
-         RteRingQueue* queue = (RteRingQueue*)events[i].data.ptr;
-         queue->drainEventFD();
+         IOEventSource* source = (IOEventSource*)events[i].data.ptr;
 
-         if(queue == ioContext->highPrioQueue.get() )
-            gotHighPrio = true;
+         if(source->type == IOEventSource::QUEUE)
+         {
+            source->queue->drainEventFD();
+
+            if(source->queue == ioContext->highPrioQueue.get() )
+               gotHighPrio = true;
+            else
+            if(source->queue == ioContext->requestQueue.get() )
+               gotRequest = true;
+         }
          else
-         if(queue == ioContext->requestQueue.get() )
-            gotRequest = true;
+         {
+            asyncContext->drainEventFD();
+            asyncContext->reapCompletions();
+         }
       }
 
-      if(gotHighPrio)
-         drainIOQueue(ioContext->highPrioQueue.get(), outWorks);
+      availableSlots = asyncContext->getNumAvailableRequestSlots();
+      if(!getSelfTerminate() && availableSlots && gotHighPrio)
+      {
+         const size_t numWorks = outWorks.size();
+         drainIOQueue(ioContext->highPrioQueue.get(), availableSlots, outWorks);
+         availableSlots -= outWorks.size() - numWorks;
+      }
 
-      if(gotRequest)
-         drainIOQueue(ioContext->requestQueue.get(), outWorks);
+      if(!getSelfTerminate() && availableSlots && gotRequest)
+         drainIOQueue(ioContext->requestQueue.get(), availableSlots, outWorks);
+
+      if(getSelfTerminate() && !asyncContext->getNumActiveRequests())
+         return;
 
       if(!outWorks.empty() )
          return;
    }
 }
 
-void Worker::drainIOQueue(RteRingQueue* queue, WorkList& outWorks)
+void Worker::drainIOQueue(RteRingQueue* queue, unsigned maxWorks, WorkList& outWorks)
 {
    void* items[WORKER_IO_DEQUEUE_BURST];
    unsigned maxItems = queue->capacity();
@@ -143,7 +186,10 @@ void Worker::drainIOQueue(RteRingQueue* queue, WorkList& outWorks)
    if(maxItems > WORKER_IO_DEQUEUE_BURST)
       maxItems = WORKER_IO_DEQUEUE_BURST;
 
-   for(;;)
+   if(maxItems > maxWorks)
+      maxItems = maxWorks;
+
+   while(maxItems)
    {
       unsigned numItems = queue->dequeueBurst(items, maxItems);
       if(!numItems)
@@ -151,6 +197,8 @@ void Worker::drainIOQueue(RteRingQueue* queue, WorkList& outWorks)
 
       for(unsigned i = 0; i < numItems; i++)
          outWorks.push_back((Work*)items[i]);
+
+      maxItems -= numItems;
    }
 }
 
@@ -160,10 +208,18 @@ void Worker::workLoop(QueueWorkType workType)
 
    const bool isIOWorkType = workType == QueueWorkType_IO;
    int ioEpollFD = -1;
+   IOEventSource highPrioSource(IOEventSource::QUEUE);
+   IOEventSource requestSource(IOEventSource::QUEUE);
+   IOEventSource aioSource(IOEventSource::AIO);
 
    if(isIOWorkType)
    {
-      ioEpollFD = initIOEpollFD();
+      asyncContext.reset(new IOWorkerAsyncContext());
+
+      highPrioSource.queue = ioContext->highPrioQueue.get();
+      requestSource.queue = ioContext->requestQueue.get();
+
+      ioEpollFD = initIOEpollFD(&highPrioSource, &requestSource, &aioSource);
       currentIOWorkerContext = ioContext;
    }
    else
@@ -181,6 +237,23 @@ void Worker::workLoop(QueueWorkType workType)
       for(WorkListIter iter = readyWorks.begin(); iter != readyWorks.end(); iter++)
       {
          Work* work = *iter;
+
+         if(isIOWorkType && work->supportsAsyncIO())
+         {
+            AsyncIORequest* request = work->startAsyncIO(
+               *asyncContext, bufIn, bufInLen, bufOut, bufOutLen);
+
+            if(request)
+            {
+               asyncContext->addRequest(request);
+
+               if(!request->start() || request->isComplete())
+                  asyncContext->completeRequest(request);
+
+               continue;
+            }
+         }
+
 #ifdef BEEGFS_DEBUG_PROFILING
          TimeFine workStartTime;
 #endif
@@ -248,6 +321,8 @@ void Worker::workLoop(QueueWorkType workType)
       ioContext->writeMirrorConnPool.shutdown();
       currentIOWorkerContext = NULL;
       close(ioEpollFD);
+
+   asyncContext.reset();
    }
 }
 

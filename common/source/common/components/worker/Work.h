@@ -6,6 +6,8 @@
 
 class Work;
 class IncomingPreprocessedMsgWork;
+class AsyncIORequest;
+class IOWorkerAsyncContext;
 
 typedef std::list<Work*> WorkList;
 typedef WorkList::iterator WorkListIter;
@@ -26,6 +28,17 @@ class Work
       Work& operator=(Work&&) = delete;
 
       virtual void process(char* bufIn, unsigned bufInLen, char* bufOut, unsigned bufOutLen) = 0;
+
+      virtual bool supportsAsyncIO() const
+      {
+         return false;
+      }
+
+      virtual AsyncIORequest* startAsyncIO(IOWorkerAsyncContext& asyncContext,
+         char* bufIn, unsigned bufInLen, char* bufOut, unsigned bufOutLen)
+      {
+         return NULL;
+      }
 
       virtual IncomingPreprocessedMsgWork* asIncomingPreprocessedMsgWork()
       {
@@ -51,4 +64,3 @@ class Work
       TimeFine age;
 #endif
 };
-
