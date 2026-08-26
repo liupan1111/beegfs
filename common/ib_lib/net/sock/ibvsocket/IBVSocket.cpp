@@ -466,6 +466,7 @@ err_invalidateSock:
    return false;
 }
 
+
 /**
  * Note: This also inits the delayedCmEventsQueue.
  *
@@ -1485,20 +1486,23 @@ int __IBVSocket_postRead(IBVSocket* _this, IBVCommDest* remoteDest,
 }
 
 #ifdef BEEGFS_NVFS
-static bool __IBVSocket_getBufferKey(IBVCommContext *commContext, char *buffer, unsigned *key)
+static bool __IBVSocket_getBufferKey(IBVCommContext *commContext, char *buffer,
+   size_t bufferLen, unsigned *key)
 {
    struct ibv_mr *mr = NULL;
+   size_t registerLen = bufferLen ? bufferLen : WORKER_BUFOUT_SIZE;
 
    MRMap::const_iterator iter = commContext->workerMRs->find(buffer);
 
    if (iter == commContext->workerMRs->end())
    {
-      // It is assumed that buffer came from a Worker and is WORKER_BUFOUT_SIZE.
-      // TODO: pass around a Buffer with a length instead of unqualified char*.
+      // Older callers use the Worker buffer size implicitly. Async IO callers
+      // pass the actual pool-buffer length so the lazy MR cache can register
+      // smaller buffers safely.
       // This cache of ibv_mr will potentially grow to Workers * Targets
       // and the ibv_mr instances hang around until the IBVSocket is destroyed.
       // That is probably something to look into...
-      if (unlikely(__IBVSocket_registerBuf(commContext, buffer, WORKER_BUFOUT_SIZE, &mr)))
+      if (unlikely(__IBVSocket_registerBuf(commContext, buffer, registerLen, &mr)))
       {
          LOG(SOCKLIB, WARNING, "ibv_postWrite(): failed to register buffer.");
          return false;
@@ -1607,7 +1611,7 @@ static int __IBVSocket_waitForRDMACompletion(IBVCommContext* commContext, uint64
  */
 static int __IBVSocket_postRDMA(IBVSocket* _this, ibv_wr_opcode opcode,
    char* localBuf, int bufLen, unsigned lkey,
-   uint64_t remoteBuf, unsigned rkey)
+   uint64_t remoteBuf, unsigned rkey, size_t localBufLen)
 {
    IBVCommContext* commContext = _this->commContext;
    struct ibv_sge list;
@@ -1618,7 +1622,7 @@ static int __IBVSocket_postRDMA(IBVSocket* _this, ibv_wr_opcode opcode,
 
    if (unlikely(lkey == 0))
    {
-      if (unlikely(!__IBVSocket_getBufferKey(commContext, localBuf, &lkey)))
+      if (unlikely(!__IBVSocket_getBufferKey(commContext, localBuf, localBufLen, &lkey)))
       {
          LOG(SOCKLIB, WARNING, "ibv_postRDMA(): no local key.");
          return -1;
@@ -1650,29 +1654,29 @@ static int __IBVSocket_postRDMA(IBVSocket* _this, ibv_wr_opcode opcode,
 }
 
 int __IBVSocket_postWrite(IBVSocket* _this, char* localBuf, int bufLen,
-   unsigned lkey, uint64_t remoteBuf, unsigned rkey)
+   unsigned lkey, uint64_t remoteBuf, unsigned rkey, size_t localBufLen)
 {
    return __IBVSocket_postRDMA(_this, IBV_WR_RDMA_WRITE, localBuf, bufLen,
-      lkey, remoteBuf, rkey);
+      lkey, remoteBuf, rkey, localBufLen);
 }
 
 int __IBVSocket_postRead(IBVSocket* _this, char* localBuf, int bufLen,
-   unsigned lkey, uint64_t remoteBuf, unsigned rkey)
+   unsigned lkey, uint64_t remoteBuf, unsigned rkey, size_t localBufLen)
 {
    return __IBVSocket_postRDMA(_this, IBV_WR_RDMA_READ, localBuf, bufLen,
-      lkey, remoteBuf, rkey);
+      lkey, remoteBuf, rkey, localBufLen);
 }
 
 ssize_t IBVSocket_read(IBVSocket* _this, const char* buf, size_t bufLen,
-   unsigned lkey, const uint64_t rbuf, unsigned rkey)
+   unsigned lkey, const uint64_t rbuf, unsigned rkey, size_t localBufLen)
 {
-   return __IBVSocket_postRead(_this, (char *)buf, bufLen, lkey, rbuf, rkey);
+   return __IBVSocket_postRead(_this, (char *)buf, bufLen, lkey, rbuf, rkey, localBufLen);
 }
 
 ssize_t IBVSocket_write(IBVSocket* _this, const char* buf, size_t bufLen,
- unsigned lkey, const uint64_t rbuf, unsigned rkey)
+ unsigned lkey, const uint64_t rbuf, unsigned rkey, size_t localBufLen)
 {
-   return __IBVSocket_postWrite(_this, (char *)buf, bufLen, lkey, rbuf, rkey);
+   return __IBVSocket_postWrite(_this, (char *)buf, bufLen, lkey, rbuf, rkey, localBufLen);
 }
 
 #endif /* BEEGFS_NVFS */

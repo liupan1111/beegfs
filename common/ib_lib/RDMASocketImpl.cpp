@@ -184,9 +184,10 @@ void RDMASocketImpl::shutdownAndRecvDisconnect(int timeoutMS)
  *
  * @throw SocketException
  */
-ssize_t RDMASocketImpl::read(const void *buf, size_t len, unsigned lkey, const uint64_t rbuf, unsigned rkey)
+ssize_t RDMASocketImpl::read(const void *buf, size_t len, unsigned lkey, const uint64_t rbuf,
+   unsigned rkey, size_t localBufLen)
 {
-   size_t status = IBVSocket_read(this->ibvsock, (char *)buf, len, lkey, rbuf, rkey);
+   size_t status = IBVSocket_read(this->ibvsock, (char *)buf, len, lkey, rbuf, rkey, localBufLen);
    return (status == 0) ? len : -1;
 }
 
@@ -195,9 +196,10 @@ ssize_t RDMASocketImpl::read(const void *buf, size_t len, unsigned lkey, const u
  *
  * @throw SocketException
  */
-ssize_t RDMASocketImpl::write(const void *buf, size_t len, unsigned lkey, const uint64_t rbuf, unsigned rkey)
+ssize_t RDMASocketImpl::write(const void *buf, size_t len, unsigned lkey, const uint64_t rbuf,
+   unsigned rkey, size_t localBufLen)
 {
-   size_t status = IBVSocket_write(this->ibvsock, (char *)buf, len, lkey, rbuf, rkey);
+   size_t status = IBVSocket_write(this->ibvsock, (char *)buf, len, lkey, rbuf, rkey, localBufLen);
    return (status == 0) ? len : -1;
 }
 #endif /* BEEGFS_NVFS */
