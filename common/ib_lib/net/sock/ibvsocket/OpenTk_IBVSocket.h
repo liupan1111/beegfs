@@ -48,9 +48,9 @@ extern bool IBVSocket_shutdown(IBVSocket* _this);
 
 #ifdef BEEGFS_NVFS
 extern ssize_t IBVSocket_write(IBVSocket* _this, const char* buf, size_t bufLen, unsigned lkey,
-   const uint64_t rbuf, unsigned rkey);
+   const uint64_t rbuf, unsigned rkey, size_t localBufLen);
 extern ssize_t IBVSocket_read(IBVSocket* _this, const char* buf, size_t bufLen, unsigned lkey,
-   const uint64_t rbuf, unsigned rkey);
+   const uint64_t rbuf, unsigned rkey, size_t localBufLen);
 #endif /* BEEGFS_NVFS */
 
 extern ssize_t IBVSocket_recv(IBVSocket* _this, char* buf, size_t bufLen, int flags);

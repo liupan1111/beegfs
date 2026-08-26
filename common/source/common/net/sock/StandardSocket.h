@@ -24,8 +24,10 @@ class StandardSocket : public PooledSocket
       virtual void shutdownAndRecvDisconnect(int timeoutMS);
 
 #ifdef BEEGFS_NVFS
-      virtual ssize_t read(const void *buf, size_t len, unsigned lkey, const uint64_t rbuf, unsigned rkey);
-      virtual ssize_t write(const void *buf, size_t len, unsigned lkey, const uint64_t rbuf, unsigned rkey);
+      virtual ssize_t read(const void *buf, size_t len, unsigned lkey, const uint64_t rbuf,
+         unsigned rkey, size_t localBufLen = 0);
+      virtual ssize_t write(const void *buf, size_t len, unsigned lkey, const uint64_t rbuf,
+         unsigned rkey, size_t localBufLen = 0);
 #endif /* BEEGFS_NVFS */
 
       virtual ssize_t send(const void *buf, size_t len, int flags);

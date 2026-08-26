@@ -17,8 +17,10 @@ class RDMASocketImpl : public RDMASocket
       virtual void shutdownAndRecvDisconnect(int timeoutMS) override;
 
 #ifdef BEEGFS_NVFS
-      virtual ssize_t write(const void *buf, size_t len, unsigned lkey, const uint64_t rbuf, unsigned rkey) override;
-      virtual ssize_t read(const void *buf, size_t len, unsigned lkey, const uint64_t rbuf, unsigned rkey) override;
+      virtual ssize_t write(const void *buf, size_t len, unsigned lkey, const uint64_t rbuf,
+         unsigned rkey, size_t localBufLen = 0) override;
+      virtual ssize_t read(const void *buf, size_t len, unsigned lkey, const uint64_t rbuf,
+         unsigned rkey, size_t localBufLen = 0) override;
 #endif /* BEEGFS_NVFS */
 
       virtual ssize_t send(const void *buf, size_t len, int flags) override;

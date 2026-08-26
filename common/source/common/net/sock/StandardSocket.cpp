@@ -348,12 +348,14 @@ void StandardSocket::shutdownAndRecvDisconnect(int timeoutMS)
  * @throw SocketException
  */
 
-ssize_t StandardSocket::read(const void *buf, size_t len, uint32_t lkey, const uint64_t rbuf, uint32_t rkey)
+ssize_t StandardSocket::read(const void *buf, size_t len, uint32_t lkey, const uint64_t rbuf,
+   uint32_t rkey, size_t localBufLen)
 {
       throw SocketException("Standard socket doesn't support RDMA read");
 }
 
-ssize_t StandardSocket::write(const void *buf, size_t len, uint32_t lkey, const uint64_t rbuf, uint32_t rkey)
+ssize_t StandardSocket::write(const void *buf, size_t len, uint32_t lkey, const uint64_t rbuf,
+   uint32_t rkey, size_t localBufLen)
 {
       throw SocketException("Standard socket doesn't support RDMA write");
 }
