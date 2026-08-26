@@ -75,9 +75,9 @@ extern int __IBVSocket_postRead(IBVSocket* _this, IBVCommDest* remoteDest,
    struct ibv_mr* localMR, char* localBuf, int bufLen);
 #ifdef BEEGFS_NVFS
 extern int __IBVSocket_postWrite(IBVSocket* _this, char* localBuf, int bufLen, unsigned lkey,
-   uint64_t remoteBuf, unsigned rkey);
+   uint64_t remoteBuf, unsigned rkey, size_t localBufLen);
 extern int __IBVSocket_postRead(IBVSocket* _this, char* localBuf, int bufLen, unsigned lkey,
-   uint64_t remoteBuf, unsigned rkey);
+   uint64_t remoteBuf, unsigned rkey, size_t localBufLen);
 #endif /* BEEGFS_NVFS */
 extern int __IBVSocket_postSend(IBVSocket* _this, size_t bufIndex, int bufLen);
 extern int __IBVSocket_recvWC(IBVSocket* _this, int timeoutMS, struct ibv_wc* outWC);
