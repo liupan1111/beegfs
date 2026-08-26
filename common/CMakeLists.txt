@@ -367,6 +367,8 @@ add_library(
 	./source/common/components/TimerQueue.h
 	./source/common/components/worker/WriteLocalFileWork.h
 	./source/common/components/worker/queue/MultiWorkQueue.cpp
+	./source/common/components/worker/queue/IOWorkerAsyncContext.h
+	./source/common/components/worker/queue/IOWorkerAsyncContext.cpp
 	./source/common/components/worker/queue/RteRingQueue.h
 	./source/common/components/worker/queue/RteRingQueue.cpp
 	./source/common/components/worker/queue/IOWorkerContext.h
@@ -588,6 +590,7 @@ target_include_directories(
 target_link_libraries(
 	beegfs-common
 	${NL3ROUTE_LIBRARIES}
+	aio
 	ssl
 	crypto
 )
