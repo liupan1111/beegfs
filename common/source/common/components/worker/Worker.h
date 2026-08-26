@@ -51,8 +51,11 @@ class Worker : public PThread
       virtual void run();
 
       void workLoop(QueueWorkType workType);
-      Work* waitForWorkByType(HighResolutionStats& newStats, PersonalWorkQueue* personalWorkQueue,
-         QueueWorkType workType);
+      int initIOEpollFD();
+      void waitForIOWorks(int epollFD, WorkList& outWorks);
+      void drainIOQueue(RteRingQueue* queue, WorkList& outWorks);
+      void waitForWorkByType(HighResolutionStats& newStats, PersonalWorkQueue* personalWorkQueue,
+         QueueWorkType workType, WorkList& outWorks);
 
       void initBuffers();
 
@@ -115,3 +118,4 @@ class Worker : public PThread
          this->terminateWithFullQueue = false;
       }
 };
+
