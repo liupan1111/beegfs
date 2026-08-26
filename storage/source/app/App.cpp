@@ -77,6 +77,7 @@ App::App(int argc, char** argv)
    this->nextNumaBindTarget = 0;
 
    this->workersRunning = false;
+   this->ioWorkerRouter = NULL;
 
    this->buddyResyncer = NULL;
    this->chunkLockStore = NULL;
@@ -102,6 +103,7 @@ App::~App()
    SAFE_DELETE(this->buddyResyncer);
    SAFE_DELETE(this->chunkFetcher);
    SAFE_DELETE(this->dgramListener);
+   SAFE_DELETE(this->ioWorkerRouter);
    SAFE_DELETE(this->chunkDirStore);
    SAFE_DELETE(this->syncedStoragePaths);
    SAFE_DELETE(this->netMessageFactory);
@@ -729,7 +731,7 @@ void App::streamListenersInit()
    for(unsigned i=0; i < numStreamListeners; i++)
    {
       StreamListenerV2* listener = new StorageStreamListenerV2(
-         std::string("StreamLis") + StringTk::uintToStr(i+1), this);
+         std::string("StreamLis") + StringTk::uintToStr(i+1), this, i);
 
       if(cfg->getTuneListenerPrioShift() )
          listener->setPriorityShift(cfg->getTuneListenerPrioShift() );
@@ -745,6 +747,11 @@ void App::workersInit()
 {
    unsigned numWorkers = cfg->getTuneNumWorkers();
 
+   this->ioWorkerRouter = new StorageIOWorkerRouter(numStreamListeners, numWorkers);
+
+   for(MultiWorkQueueMapIter iter = workQueueMap.begin(); iter != workQueueMap.end(); iter++)
+      ioWorkerRouter->addOSD(iter->first);
+
    unsigned currentTargetNum= 1; /* targetNum is only added to worker name if there are multiple
       target queues (i.e. workQueueMap.size > 1) */
 
@@ -755,9 +762,10 @@ void App::workersInit()
          Worker* worker = new Worker(
             std::string("Worker") + StringTk::uintToStr(i+1) +
             ( (workQueueMap.size() > 1) ? "-" + StringTk::uintToStr(currentTargetNum) : ""),
-            iter->second, QueueWorkType_INDIRECT);
+            iter->second, QueueWorkType_IO);
 
          worker->setBufLens(cfg->getTuneWorkerBufSize(), cfg->getTuneWorkerBufSize() );
+         worker->setIOWorkerContext(ioWorkerRouter->getWorkerContext(iter->first, i));
 
          workerList.push_back(worker);
       }

@@ -40,7 +40,8 @@ enum QueueWorkType
    QueueWorkType_DIRECT=0,
    QueueWorkType_INDIRECT,
 
-   QueueWorkType_FINAL_DONTUSE // the final element as terminating vector index
+   QueueWorkType_FINAL_DONTUSE, // the final element as terminating vector index
+   QueueWorkType_IO
 };
 
 

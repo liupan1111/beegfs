@@ -2,6 +2,7 @@
 
 #include <common/app/log/LogContext.h>
 #include <common/app/AbstractApp.h>
+#include <common/components/worker/queue/IOWorkerContext.h>
 #include <common/components/worker/queue/MultiWorkQueue.h>
 #include <common/components/worker/queue/PersonalWorkQueue.h>
 #include <common/components/ComponentInitException.h>
@@ -40,6 +41,7 @@ class Worker : public PThread
 
       MultiWorkQueue* workQueue;
       QueueWorkType workType;
+      IOWorkerContext* ioContext;
 
       PersonalWorkQueue* personalWorkQueue;
 
@@ -83,6 +85,16 @@ class Worker : public PThread
          return this->workQueue;
       }
 
+      void setIOWorkerContext(IOWorkerContext* ioContext)
+      {
+         this->ioContext = ioContext;
+      }
+
+      IOWorkerContext* getIOWorkerContext() const
+      {
+         return this->ioContext;
+      }
+
       /**
        * Note: Don't add anything to this queue directly, do it only via
        * MultiWorkQueue->addPersonalWork().
@@ -103,4 +115,3 @@ class Worker : public PThread
          this->terminateWithFullQueue = false;
       }
 };
-

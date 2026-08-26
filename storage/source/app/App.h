@@ -24,6 +24,7 @@
 #include <components/DatagramListener.h>
 #include <components/InternodeSyncer.h>
 #include <components/StorageStatsCollector.h>
+#include <components/worker/StorageIOWorkerRouter.h>
 #include <net/message/NetMessageFactory.h>
 #include <nodes/StorageNodeOpStats.h>
 #include <session/SessionStore.h>
@@ -120,6 +121,7 @@ class App : public AbstractApp
       StreamLisVec streamLisVec;
 
       WorkerList workerList;
+      StorageIOWorkerRouter* ioWorkerRouter;
       bool workersRunning;
       Mutex mutexWorkersRunning;
 
@@ -299,6 +301,11 @@ class App : public AbstractApp
       MultiWorkQueueMap* getWorkQueueMap()
       {
          return &workQueueMap;
+      }
+
+      StorageIOWorkerRouter* getIOWorkerRouter() const
+      {
+         return ioWorkerRouter;
       }
 
       SessionStore* getSessions() const

@@ -128,15 +128,26 @@ void StreamListenerV2::listenLoop()
             onIncomingData( (Socket*)currentPollable);
       }
 
+      flushIncomingWorkNotifications();
+
       if(unlikely(runRDMAConnIdleCheck) )
       { // note: whether check actually happens depends on elapsed time since last check
          runRDMAConnIdleCheck = false;
          rdmaConnIdleCheck();
       }
-
    }
 }
 
+bool StreamListenerV2::enqueueIncomingWork(Socket* sock, NetMessageHeader* msgHeader,
+   IncomingPreprocessedMsgWork* work)
+{
+   if (sock->getIsDirect())
+      getWorkQueue(msgHeader->msgTargetID)->addDirectWork(work, msgHeader->msgUserID);
+   else
+      getWorkQueue(msgHeader->msgTargetID)->addIndirectWork(work, msgHeader->msgUserID);
+
+   return true;
+}
 
 /**
  * Receive msg header and add the socket to the work queue.
@@ -188,10 +199,7 @@ void StreamListenerV2::onIncomingData(Socket* sock)
             ? "; targetID: " + StringTk::uintToStr(msgHeader.msgTargetID)
             : "") );
 
-      if (sock->getIsDirect())
-         getWorkQueue(msgHeader.msgTargetID)->addDirectWork(work, msgHeader.msgUserID);
-      else
-         getWorkQueue(msgHeader.msgTargetID)->addIndirectWork(work, msgHeader.msgUserID);
+      enqueueIncomingWork(sock, &msgHeader, work);
 
       /* notes on sock handling:
          *) no need to remove sock from epoll set, because we use edge-triggered mode with

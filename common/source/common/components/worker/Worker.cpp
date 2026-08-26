@@ -11,6 +11,7 @@ Worker::Worker(const std::string& workerID, MultiWorkQueue* workQueue, QueueWork
       bufOut(NULL),
       workQueue(workQueue),
       workType(workType),
+      ioContext(NULL),
       personalWorkQueue(new PersonalWorkQueue() )
 {
    HighResolutionStatsTk::resetStats(&this->stats);

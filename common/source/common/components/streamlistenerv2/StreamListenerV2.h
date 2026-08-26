@@ -12,8 +12,8 @@
 #include <common/toolkit/Pipe.h>
 #include <common/Common.h>
 
-
 class AbstractApp; // forward declaration
+class IncomingPreprocessedMsgWork;
 
 
 class StreamListenerV2 : public PThread
@@ -113,5 +113,10 @@ class StreamListenerV2 : public PThread
          return this->workQueue;
       }
 
-};
+      virtual bool enqueueIncomingWork(Socket* sock, NetMessageHeader* msgHeader,
+         IncomingPreprocessedMsgWork* work);
 
+      virtual void flushIncomingWorkNotifications()
+      {
+      }
+};
