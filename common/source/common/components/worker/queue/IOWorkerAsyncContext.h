@@ -8,6 +8,8 @@
 #include <vector>
 
 struct io_event;
+class IncomingPreprocessedMsgWork;
+struct IOWorkerContext;
 
 struct AsyncIOBuffer
 {
@@ -99,7 +101,7 @@ class IOWorkerAsyncContext
       static const size_t DEFAULT_BUFFER_ALIGNMENT = 4096;
       static const size_t DEFAULT_BUFFER_COUNT = 16;
 
-      IOWorkerAsyncContext();
+      IOWorkerAsyncContext(IOWorkerContext* workerContext);
       ~IOWorkerAsyncContext();
 
       IOWorkerAsyncContext(const IOWorkerAsyncContext&) = delete;
@@ -133,6 +135,7 @@ class IOWorkerAsyncContext
 
       void drainEventFD();
       void reapCompletions();
+      void returnSocket(IncomingPreprocessedMsgWork* work);
 
       size_t getNumActiveRequests() const
       {
@@ -142,6 +145,7 @@ class IOWorkerAsyncContext
    private:
       io_context_t aioContext;
       int aioEventFD;
+      IOWorkerContext* workerContext;
       AsyncIORequestList activeRequests;
       AsyncIOBufferPool bufferPool;
 };

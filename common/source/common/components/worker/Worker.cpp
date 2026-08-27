@@ -167,7 +167,7 @@ void Worker::workLoop(QueueWorkType workType)
 
    if(isIOWorkType)
    {
-      asyncContext.reset(new IOWorkerAsyncContext());
+      asyncContext.reset(new IOWorkerAsyncContext(ioContext));
 
       highPrioSource.queue = ioContext->highPrioQueue.get();
       requestSource.queue = ioContext->requestQueue.get();
