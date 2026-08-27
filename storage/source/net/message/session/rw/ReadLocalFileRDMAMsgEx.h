@@ -7,6 +7,7 @@
 #include <common/storage/StorageErrors.h>
 #include <common/components/worker/Worker.h>
 #include <session/SessionLocalFileStore.h>
+#include <components/worker/AsyncRDMARequest.h>
 #include "ReadLocalFileV2MsgEx.h"
 
 /**
@@ -104,6 +105,34 @@ class ReadLocalFileRDMAMsgSender : public ReadLocalFileRDMAMsg
          *dataBuf = ctx.getBuffer();
          *sendBuf = *dataBuf;
          return ctx.getBufferLength();
+      }
+
+   public:
+      bool supportsAsyncIO() const
+      {
+         return true;
+      }
+
+      AsyncIORequest* startAsyncIO(IOWorkerAsyncContext& asyncContext,
+         IncomingPreprocessedMsgWork* work, Socket* sock, HighResolutionStats* stats)
+      {
+         AsyncRDMARequest::Params params;
+
+         params.operation = AsyncRDMARequest::READ;
+         params.clientNumID = getClientNumID();
+         params.fileHandleID = getFileHandleID();
+         params.targetID = getTargetID();
+         params.pathInfo = *getPathInfo();
+         params.accessFlags = getAccessFlags();
+         params.offset = getOffset();
+         params.count = getCount();
+         params.featureFlags = getMsgHeaderFeatureFlags();
+         params.msgUserID = getMsgHeaderUserID();
+         params.quotaUserID = 0;
+         params.quotaGroupID = 0;
+         params.rdmaInfo = *getRdmaInfo();
+
+         return new AsyncRDMARequest(asyncContext, work, sock, stats, params);
       }
 };
 
