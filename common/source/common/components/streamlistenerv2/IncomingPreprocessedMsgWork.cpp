@@ -1,5 +1,6 @@
 #include <common/app/log/LogContext.h>
 #include <common/app/AbstractApp.h>
+#include <common/components/worker/queue/IOWorkerAsyncContext.h>
 #include <common/components/streamlistenerv2/StreamListenerV2.h>
 #include <common/threading/PThread.h>
 #include <common/net/message/NetMessage.h>
@@ -200,6 +201,21 @@ IOWorkerResponse* IncomingPreprocessedMsgWork::createIOWorkerResponse(uint16_t o
    return new IOWorkerResponse(responseSock, osdID, workerIndex, hasImmediateData);
 }
 
+void IncomingPreprocessedMsgWork::completeAsyncSocket(IOWorkerAsyncContext& asyncContext)
+{
+   returnSocketToListener = true;
+   asyncContext.returnSocket(this);
+}
+
+void IncomingPreprocessedMsgWork::invalidateAsyncConnection()
+{
+   if(!sock)
+      return;
+
+   sock->unsetStats();
+   invalidateConnection(sock);
+   sock = NULL;
+}
 /**
  * Release a valid incoming socket by returning it to the StreamListenerV2.
  *
