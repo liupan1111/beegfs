@@ -6,6 +6,7 @@
 #include <common/components/worker/Worker.h>
 #include <session/SessionLocalFile.h>
 #include <common/storage/StorageErrors.h>
+#include <components/worker/AsyncRDMARequest.h>
 #include "WriteLocalFileMsgEx.h"
 
 
@@ -85,6 +86,33 @@ class WriteLocalFileRDMAMsgSender : public WriteLocalFileRDMAMsg
          return 0;
       }
 
+   public:
+      bool supportsAsyncIO() const
+      {
+         return true;
+      }
+
+      AsyncIORequest* startAsyncIO(IOWorkerAsyncContext& asyncContext,
+         IncomingPreprocessedMsgWork* work, Socket* sock, HighResolutionStats* stats)
+      {
+         AsyncRDMARequest::Params params;
+
+         params.operation = AsyncRDMARequest::WRITE;
+         params.clientNumID = getClientNumID();
+         params.fileHandleID = getFileHandleID();
+         params.targetID = getTargetID();
+         params.pathInfo = *getPathInfo();
+         params.accessFlags = getAccessFlags();
+         params.offset = getOffset();
+         params.count = getCount();
+         params.featureFlags = getMsgHeaderFeatureFlags();
+         params.msgUserID = getMsgHeaderUserID();
+         params.quotaUserID = getUserID();
+         params.quotaGroupID = getGroupID();
+         params.rdmaInfo = *getRdmaInfo();
+
+         return new AsyncRDMARequest(asyncContext, work, sock, stats, params);
+      }
 };
 
 typedef WriteLocalFileMsgExBase<WriteLocalFileRDMAMsgSender,

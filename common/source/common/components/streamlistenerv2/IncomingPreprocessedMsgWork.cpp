@@ -6,13 +6,50 @@
 #include <common/net/message/NetMessage.h>
 #include "IncomingPreprocessedMsgWork.h"
 
+#define INCOMING_PREPROCESSED_MSG_RECV_TIMEOUT_MS 5000
+
+class CompletedIncomingAsyncRequest : public AsyncIORequest
+{
+   public:
+      CompletedIncomingAsyncRequest(IncomingPreprocessedMsgWork* work) : work(work)
+      {
+      }
+
+      ~CompletedIncomingAsyncRequest()
+      {
+         delete work;
+      }
+
+      bool start()
+      {
+         return true;
+      }
+
+      void onAIOComplete(const io_event& event)
+      {
+      }
+
+      bool isComplete() const
+      {
+         return true;
+      }
+
+   private:
+      IncomingPreprocessedMsgWork* work;
+};
+
+static AsyncIORequest* completeInvalidAsyncStart(IOWorkerAsyncContext& asyncContext,
+   IncomingPreprocessedMsgWork* work)
+{
+   work->invalidateAsyncConnection();
+   asyncContext.returnSocket(work);
+   return new CompletedIncomingAsyncRequest(work);
+}
 
 void IncomingPreprocessedMsgWork::process(char* bufIn, unsigned bufInLen,
    char* bufOut, unsigned bufOutLen)
 {
    const char* logContextStr = "Work (process incoming msg)";
-
-   const int recvTimeoutMS = 5000;
 
    unsigned numReceived = NETMSG_HEADER_LENGTH; // (header actually received by stream listener)
    std::unique_ptr<NetMessage> msg;
@@ -47,7 +84,7 @@ void IncomingPreprocessedMsgWork::process(char* bufIn, unsigned bufInLen,
       // receive the message payload
 
       if(msgPayloadLength)
-         sock->recvExactT(bufIn, msgPayloadLength, 0, recvTimeoutMS);
+         sock->recvExactT(bufIn, msgPayloadLength, 0, INCOMING_PREPROCESSED_MSG_RECV_TIMEOUT_MS);
 
       // we got the complete message buffer => create msg object
 
@@ -136,6 +173,98 @@ void IncomingPreprocessedMsgWork::process(char* bufIn, unsigned bufInLen,
       invalidateConnection(sock);
       sock = NULL;
    }
+}
+
+bool IncomingPreprocessedMsgWork::supportsAsyncIO() const
+{
+#ifdef BEEGFS_NVFS
+   return msgHeader.msgType == NETMSGTYPE_ReadLocalFileRDMA ||
+      msgHeader.msgType == NETMSGTYPE_WriteLocalFileRDMA;
+#else
+   return false;
+#endif
+}
+
+AsyncIORequest* IncomingPreprocessedMsgWork::startAsyncIO(IOWorkerAsyncContext& asyncContext,
+   char* bufIn, unsigned bufInLen, char* bufOut, unsigned bufOutLen)
+{
+   const char* logContextStr = "Work (start async incoming msg)";
+   const unsigned numReceived = NETMSG_HEADER_LENGTH;
+   std::unique_ptr<NetMessage> msg;
+
+   try
+   {
+      stats.incVals.netRecvBytes += NETMSG_HEADER_LENGTH;
+      sock->setStats(&stats);
+
+      unsigned msgLength = msgHeader.msgLength;
+      unsigned msgPayloadLength = msgLength - numReceived;
+
+      if(unlikely(msgPayloadLength > bufInLen) )
+      {
+         LogContext(logContextStr).log(Log_NOTICE,
+            std::string("Received a message that is too large. Disconnecting: ") +
+            sock->getPeername() );
+
+         return completeInvalidAsyncStart(asyncContext, this);
+      }
+
+      if(msgPayloadLength)
+         sock->recvExactT(bufIn, msgPayloadLength, 0, INCOMING_PREPROCESSED_MSG_RECV_TIMEOUT_MS);
+
+      AbstractApp* app = PThread::getCurrentThreadApp();
+      auto cfg = app->getCommonConfig();
+      auto netMessageFactory = app->getNetMessageFactory();
+
+      msg = netMessageFactory->createFromPreprocessedBuf(&msgHeader, bufIn, msgPayloadLength);
+
+      if(unlikely(msg->getMsgType() == NETMSGTYPE_Invalid) )
+      {
+         LogContext(logContextStr).log(Log_NOTICE,
+            std::string("Received an invalid message. Disconnecting: ") + sock->getPeername() );
+
+         return completeInvalidAsyncStart(asyncContext, this);
+      }
+
+      if(unlikely(cfg->getConnAuthHash() &&
+         !sock->getIsAuthenticated() &&
+         (msg->getMsgType() != NETMSGTYPE_AuthenticateChannel) ) )
+      {
+         LogContext(logContextStr).log(Log_NOTICE,
+            std::string("Rejecting message from unauthenticated peer: ") + sock->getPeername() );
+
+         return completeInvalidAsyncStart(asyncContext, this);
+      }
+
+      if(!msg->supportsAsyncIO() )
+         return completeInvalidAsyncStart(asyncContext, this);
+
+      LOG_DBG(COMMUNICATION, DEBUG, "Beginning async message processing.", sock->getPeername(),
+            msg->getMsgTypeStr());
+
+      AsyncIORequest* request = msg->startAsyncIO(asyncContext, this, sock, &stats);
+      if(request)
+         return request;
+
+      return completeInvalidAsyncStart(asyncContext, this);
+   }
+   catch(SocketTimeoutException& e)
+   {
+      LogContext(logContextStr).log(Log_NOTICE,
+         std::string("Connection timed out: ") + sock->getPeername() );
+   }
+   catch(SocketDisconnectException& e)
+   {
+      LogContext(logContextStr).log(Log_DEBUG, std::string(e.what() ) );
+   }
+   catch(SocketException& e)
+   {
+      LogContext(logContextStr).log(Log_NOTICE,
+         std::string("Connection error: ") + sock->getPeername() + std::string(": ") +
+         std::string(e.what() ) );
+   }
+
+   return completeInvalidAsyncStart(asyncContext, this);
 }
 
 IOWorkerResponse* IncomingPreprocessedMsgWork::detachIOWorkerResponse(uint16_t osdID,
@@ -328,5 +457,4 @@ bool IncomingPreprocessedMsgWork::checkRDMASocketImmediateData()
    sock = NULL;
    return false;
 }
-
 

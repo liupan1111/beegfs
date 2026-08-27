@@ -26,6 +26,9 @@ class IncomingPreprocessedMsgWork : public Work
       }
 
       virtual void process(char* bufIn, unsigned bufInLen, char* bufOut, unsigned bufOutLen);
+      virtual bool supportsAsyncIO() const;
+      virtual AsyncIORequest* startAsyncIO(IOWorkerAsyncContext& asyncContext,
+         char* bufIn, unsigned bufInLen, char* bufOut, unsigned bufOutLen);
       virtual IncomingPreprocessedMsgWork* asIncomingPreprocessedMsgWork()
       {
          return this;
@@ -49,3 +52,4 @@ class IncomingPreprocessedMsgWork : public Work
       void releaseSocket(NetMessage* msg);
       bool checkRDMASocketImmediateData();
 };
+
