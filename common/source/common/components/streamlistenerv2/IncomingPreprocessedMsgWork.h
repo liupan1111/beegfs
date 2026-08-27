@@ -32,6 +32,8 @@ class IncomingPreprocessedMsgWork : public Work
       }
 
       IOWorkerResponse* detachIOWorkerResponse(uint16_t osdID, unsigned workerIndex);
+      void completeAsyncSocket(IOWorkerAsyncContext& asyncContext);
+      void invalidateAsyncConnection();
 
       static void releaseSocket(AbstractApp* app, Socket** sock, NetMessage* msg);
       static void invalidateConnection(Socket* sock);
@@ -47,4 +49,3 @@ class IncomingPreprocessedMsgWork : public Work
       void releaseSocket(NetMessage* msg);
       bool checkRDMASocketImmediateData();
 };
-

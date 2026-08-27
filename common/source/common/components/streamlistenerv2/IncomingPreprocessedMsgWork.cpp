@@ -1,5 +1,6 @@
 #include <common/app/log/LogContext.h>
 #include <common/app/AbstractApp.h>
+#include <common/components/worker/queue/IOWorkerAsyncContext.h>
 #include <common/components/streamlistenerv2/StreamListenerV2.h>
 #include <common/threading/PThread.h>
 #include <common/net/message/NetMessage.h>
@@ -144,6 +145,22 @@ IOWorkerResponse* IncomingPreprocessedMsgWork::detachIOWorkerResponse(uint16_t o
    sock = NULL;
 
    return new IOWorkerResponse(responseSock, osdID, workerIndex, hasImmediateData);
+}
+
+void IncomingPreprocessedMsgWork::completeAsyncSocket(IOWorkerAsyncContext& asyncContext)
+{
+   releaseSocket(NULL);
+   asyncContext.returnSocket(this);
+}
+
+void IncomingPreprocessedMsgWork::invalidateAsyncConnection()
+{
+   if(!sock)
+      return;
+
+   sock->unsetStats();
+   invalidateConnection(sock);
+   sock = NULL;
 }
 
 void IncomingPreprocessedMsgWork::releaseSocket(NetMessage* msg)
@@ -311,6 +328,5 @@ bool IncomingPreprocessedMsgWork::checkRDMASocketImmediateData()
    sock = NULL;
    return false;
 }
-
 
 
