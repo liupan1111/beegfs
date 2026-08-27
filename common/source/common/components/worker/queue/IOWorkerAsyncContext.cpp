@@ -1,4 +1,6 @@
 #include <common/components/worker/queue/IOWorkerAsyncContext.h>
+#include <common/components/streamlistenerv2/IncomingPreprocessedMsgWork.h>
+#include <common/components/worker/queue/IOWorkerContext.h>
 #include <common/system/System.h>
 #include <common/Common.h>
 
@@ -130,9 +132,10 @@ void AsyncIOBufferPool::release(AsyncIOBuffer* buffer)
    freeBuffers.push_back(buffer);
 }
 
-IOWorkerAsyncContext::IOWorkerAsyncContext() :
+IOWorkerAsyncContext::IOWorkerAsyncContext(IOWorkerContext* workerContext) :
    aioContext(0),
    aioEventFD(-1),
+   workerContext(workerContext),
    bufferPool(DEFAULT_ASYNC_REQUEST_SLOTS, DEFAULT_BUFFER_SIZE, DEFAULT_BUFFER_ALIGNMENT)
 {
    aioEventFD = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
@@ -220,4 +223,13 @@ void IOWorkerAsyncContext::reapCompletions()
             completeRequest(request);
       }
    }
+}
+
+void IOWorkerAsyncContext::returnSocket(IncomingPreprocessedMsgWork* work)
+{
+   IOWorkerResponse* response = work->detachIOWorkerResponse(
+      workerContext->osdID, workerContext->workerIndex);
+
+   workerContext->responseQueue->enqueueWait(response);
+   workerContext->responseQueue->notify();
 }

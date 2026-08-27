@@ -11,6 +11,9 @@
 
 #include <climits>
 
+class AsyncIORequest;
+class IOWorkerAsyncContext;
+class IncomingPreprocessedMsgWork;
 
 // common message constants
 // ========================
@@ -180,6 +183,14 @@ class NetMessage
       }
 
       virtual bool supportsMirroring() const { return false; }
+
+      virtual bool supportsAsyncIO() const { return false; }
+
+      virtual AsyncIORequest* startAsyncIO(IOWorkerAsyncContext& asyncContext,
+         IncomingPreprocessedMsgWork* work, Socket* sock, HighResolutionStats* stats)
+      {
+         return NULL;
+      }
 
    protected:
       NetMessage(unsigned short msgType)
