@@ -7,6 +7,7 @@
 #include <common/net/sock/Socket.h>
 #include <common/Common.h>
 
+class IOWorkerAsyncContext;
 
 class IncomingPreprocessedMsgWork : public Work
 {
@@ -36,6 +37,8 @@ class IncomingPreprocessedMsgWork : public Work
        * worker may delete the work item while the listener continues owning the socket.
        */
       IOWorkerResponse* createIOWorkerResponse(uint16_t osdID, unsigned workerIndex);
+      void completeAsyncSocket(IOWorkerAsyncContext& asyncContext);
+      void invalidateAsyncConnection();
 
       static void releaseSocket(AbstractApp* app, Socket** sock, NetMessage* msg);
       static void invalidateConnection(Socket* sock);

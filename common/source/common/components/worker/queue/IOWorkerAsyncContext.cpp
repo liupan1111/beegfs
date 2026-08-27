@@ -227,7 +227,7 @@ void IOWorkerAsyncContext::reapCompletions()
 
 void IOWorkerAsyncContext::returnSocket(IncomingPreprocessedMsgWork* work)
 {
-   IOWorkerResponse* response = work->detachIOWorkerResponse(
+   IOWorkerResponse* response = work->createIOWorkerResponse(
       workerContext->osdID, workerContext->workerIndex);
 
    workerContext->responseQueue->enqueueWait(response);

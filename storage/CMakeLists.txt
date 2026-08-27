@@ -100,6 +100,8 @@ add_library(
 	./source/components/worker/StorageBenchWork.h
 	./source/components/worker/StorageIOWorkerRouter.h
 	./source/components/worker/StorageIOWorkerRouter.cpp
+	./source/components/worker/AsyncRDMARequest.h
+	./source/components/worker/AsyncRDMARequest.cpp
 	./source/components/benchmarker/StorageBenchOperator.cpp
 	./source/components/benchmarker/StorageBenchOperator.h
 	./source/components/benchmarker/StorageBenchSlave.cpp

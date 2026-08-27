@@ -202,6 +202,11 @@ class SessionLocalFile
          return (this->openFlags & (O_DIRECT | O_SYNC) ) != 0;
       }
 
+      bool getHasDirectIO() const
+      {
+         return this->openFlags & O_DIRECT;
+      }
+
       int64_t getOffset()
       {
          std::lock_guard<Mutex> const lock(sessionMutex);
@@ -281,4 +286,3 @@ class SessionLocalFile
          return this->serverCrashed;
       }
 };
-
