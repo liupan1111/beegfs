@@ -120,12 +120,16 @@ void StreamListenerV2::listenLoop()
       for(size_t i=0; i < (size_t)epollRes; i++)
       {
          struct epoll_event* currentEvent = &epollEvents[i];
-         Pollable* currentPollable = (Pollable*)currentEvent->data.ptr;
+         void* currentEventPtr = currentEvent->data.ptr;
 
-         if(currentPollable == sockReturnPipeReadEnd)
+         if(currentEventPtr == sockReturnPipeReadEnd)
             onSockReturn();
          else
-            onIncomingData( (Socket*)currentPollable);
+         if(ioWorkerResponseQueues.find((RteRingQueue*)currentEventPtr) !=
+            ioWorkerResponseQueues.end() )
+            onIOWorkerResponse((RteRingQueue*)currentEventPtr);
+         else
+            onIncomingData( (Socket*)currentEventPtr);
       }
 
       flushIncomingWorkNotifications();
@@ -148,6 +152,107 @@ bool StreamListenerV2::enqueueIncomingWork(Socket* sock, NetMessageHeader* msgHe
 
    return true;
 }
+
+void StreamListenerV2::addIOWorkerResponseQueue(RteRingQueue* responseQueue)
+{
+   struct epoll_event epollEvent;
+   epollEvent.events = EPOLLIN;
+   epollEvent.data.ptr = responseQueue;
+
+   if(epoll_ctl(epollFD, EPOLL_CTL_ADD, responseQueue->getEventFD(), &epollEvent) == -1)
+      throw ComponentInitException("Unable to add IO worker response eventfd: " +
+         System::getErrString());
+
+   ioWorkerResponseQueues.insert(responseQueue);
+}
+
+void StreamListenerV2::onIOWorkerResponse(RteRingQueue* responseQueue)
+{
+   const unsigned maxResponses = 64;
+   void* responseItems[maxResponses];
+
+   responseQueue->drainEventFD();
+
+   for(;;)
+   {
+      unsigned numResponses = responseQueue->dequeueBurst(responseItems, maxResponses);
+      if(!numResponses)
+         return;
+
+      for(unsigned i = 0; i < numResponses; i++)
+      {
+         IOWorkerResponse* response = (IOWorkerResponse*)responseItems[i];
+
+         handleIOWorkerResponse(response);
+         delete(response);
+      }
+   }
+}
+
+void StreamListenerV2::handleIOWorkerResponse(IOWorkerResponse* response)
+{
+   onIOWorkerResponseDequeued(response);
+
+   if(!response->sock)
+      return;
+
+   if(response->hasImmediateData)
+      onIncomingData(response->sock);
+   else
+      rearmSocket(response->sock);
+}
+
+void StreamListenerV2::addSocketToEpoll(Socket* sock)
+{
+   struct epoll_event epollEvent;
+   epollEvent.events = EPOLLIN | EPOLLONESHOT | EPOLLET;
+   epollEvent.data.ptr = sock;
+
+   int epollRes = epoll_ctl(epollFD, EPOLL_CTL_ADD, sock->getFD(), &epollEvent);
+   if(likely(!epollRes) )
+   {
+      pollList.add(sock);
+      return;
+   }
+
+   log.logErr("Unable to add sock to epoll set. "
+      "FD: " + StringTk::uintToStr(sock->getFD() ) + " "
+      "SockTypeNum: " + StringTk::uintToStr(sock->getSockType() ) + " "
+      "SysErr: " + System::getErrString() );
+   log.log(Log_NOTICE, "Disconnecting: " + sock->getPeername() );
+
+   delete(sock);
+}
+
+void StreamListenerV2::rearmSocket(Socket* sock)
+{
+   struct epoll_event epollEvent;
+   epollEvent.events = EPOLLIN | EPOLLONESHOT | EPOLLET;
+   epollEvent.data.ptr = sock;
+
+   int epollRes = epoll_ctl(epollFD, EPOLL_CTL_MOD, sock->getFD(), &epollEvent);
+
+   if(likely(!epollRes) )
+   {
+      pollList.add(sock);
+      return;
+   }
+
+   if(errno == ENOENT)
+   {
+      addSocketToEpoll(sock);
+      return;
+   }
+
+   log.logErr("Unable to re-arm sock in epoll set. "
+      "FD: " + StringTk::uintToStr(sock->getFD() ) + "; "
+      "SockTypeNum: " + StringTk::uintToStr(sock->getSockType() ) + "; "
+      "SysErr: " + System::getErrString() );
+   log.log(Log_NOTICE, "Disconnecting: " + sock->getPeername() );
+
+   delete(sock);
+}
+
 
 /**
  * Receive msg header and add the socket to the work queue.
@@ -273,64 +378,12 @@ void StreamListenerV2::onSockReturn()
       {
          case SockPipeReturn_MSGDONE_NOIMMEDIATE:
          { // most likely case: worker is done with a msg and now returns the sock to the epoll set
-
-            struct epoll_event epollEvent;
-            epollEvent.events = EPOLLIN | EPOLLONESHOT | EPOLLET;
-            epollEvent.data.ptr = currentSock;
-
-            int epollRes = epoll_ctl(epollFD, EPOLL_CTL_MOD, currentSock->getFD(), &epollEvent);
-
-            if(likely(!epollRes) )
-            { // sock was successfully re-armed in epoll set
-               pollList.add(currentSock);
-
-               break; // break out of switch
-            }
-            else
-            if(errno != ENOENT)
-            { // error
-               log.logErr("Unable to re-arm sock in epoll set. "
-                  "FD: " + StringTk::uintToStr(currentSock->getFD() ) + "; "
-                  "SockTypeNum: " + StringTk::uintToStr(currentSock->getSockType() ) + "; "
-                  "SysErr: " + System::getErrString() );
-               log.log(Log_NOTICE, "Disconnecting: " + currentSock->getPeername() );
-
-               delete(currentSock);
-
-               break; // break out of switch
-            }
-
-            /* for ENOENT, we fall through to NEWCONN, because this socket appearently wasn't
-               used with this stream listener yet, so we need to add it (instead of modify it) */
-
-         } // might fall through here on ENOENT
-         BEEGFS_FALLTHROUGH;
+            rearmSocket(currentSock);
+         } break;
 
          case SockPipeReturn_NEWCONN:
          { // new conn from ConnAcceptor (or wasn't used with this stream listener yet)
-
-            // add new socket file descriptor to epoll set
-
-            struct epoll_event epollEvent;
-            epollEvent.events = EPOLLIN | EPOLLONESHOT | EPOLLET;
-            epollEvent.data.ptr = currentSock;
-
-            int epollRes = epoll_ctl(epollFD, EPOLL_CTL_ADD, currentSock->getFD(), &epollEvent);
-            if(likely(!epollRes) )
-            { // socket was successfully added to epoll set
-               pollList.add(currentSock);
-            }
-            else
-            { // adding to epoll set failed => unrecoverable error
-               log.logErr("Unable to add sock to epoll set. "
-                  "FD: " + StringTk::uintToStr(currentSock->getFD() ) + " "
-                  "SockTypeNum: " + StringTk::uintToStr(currentSock->getSockType() ) + " "
-                  "SysErr: " + System::getErrString() );
-               log.log(Log_NOTICE, "Disconnecting: " + currentSock->getPeername() );
-
-               delete(currentSock);
-            }
-
+            addSocketToEpoll(currentSock);
          } break;
 
          case SockPipeReturn_MSGDONE_WITHIMMEDIATE:
