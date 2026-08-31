@@ -5,6 +5,7 @@
 #include <common/Common.h>
 
 class Work;
+class IncomingPreprocessedMsgWork;
 
 typedef std::list<Work*> WorkList;
 typedef WorkList::iterator WorkListIter;
@@ -25,6 +26,11 @@ class Work
       Work& operator=(Work&&) = delete;
 
       virtual void process(char* bufIn, unsigned bufInLen, char* bufOut, unsigned bufOutLen) = 0;
+
+      virtual IncomingPreprocessedMsgWork* asIncomingPreprocessedMsgWork()
+      {
+         return NULL;
+      }
 
    protected:
       HighResolutionStats stats;

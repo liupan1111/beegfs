@@ -5,6 +5,51 @@
 #include <common/net/message/NetMessage.h>
 #include "IncomingPreprocessedMsgWork.h"
 
+namespace
+{
+
+/**
+ * Checks only for buffered RDMA immediate data. On connection errors, this deletes the socket and
+ * sets outConnectionError.
+ */
+bool hasRDMASocketImmediateData(Socket* sock, bool* outConnectionError)
+{
+   const char* logContextStr = "Work (incoming data => check RDMA immediate data)";
+
+   *outConnectionError = false;
+
+   if(sock->getSockType() != NICADDRTYPE_RDMA)
+      return false;
+
+   try
+   {
+      RDMASocket* rdmaSock = (RDMASocket*)sock;
+
+      if(!rdmaSock->nonblockingRecvCheck() )
+         return false;
+
+      LOG_DEBUG(logContextStr, Log_SPAM,
+         std::string("Got immediate data: ") + sock->getPeername() );
+
+      return true;
+   }
+   catch(SocketDisconnectException& e)
+   {
+      LogContext(logContextStr).log(Log_DEBUG, std::string(e.what() ) );
+   }
+   catch(SocketException& e)
+   {
+      LogContext(logContextStr).log(Log_NOTICE,
+         std::string("Connection error: ") + sock->getPeername() + std::string(": ") +
+         std::string(e.what() ) );
+   }
+
+   delete(sock);
+   *outConnectionError = true;
+   return false;
+}
+
+}
 
 void IncomingPreprocessedMsgWork::process(char* bufIn, unsigned bufInLen,
    char* bufOut, unsigned bufOutLen)
@@ -38,6 +83,7 @@ void IncomingPreprocessedMsgWork::process(char* bufIn, unsigned bufInLen,
 
          sock->unsetStats();
          invalidateConnection(sock);
+         sock = NULL;
 
          return;
       }
@@ -62,6 +108,7 @@ void IncomingPreprocessedMsgWork::process(char* bufIn, unsigned bufInLen,
 
          sock->unsetStats();
          invalidateConnection(sock);
+         sock = NULL;
          return;
       }
 
@@ -98,11 +145,12 @@ void IncomingPreprocessedMsgWork::process(char* bufIn, unsigned bufInLen,
             sock->getPeername() );
 
          invalidateConnection(sock);
+         sock = NULL;
 
          return;
       }
 
-      releaseSocket(app, &sock, NULL);
+      returnSocketToListener = true;
 
       return;
 
@@ -130,7 +178,26 @@ void IncomingPreprocessedMsgWork::process(char* bufIn, unsigned bufInLen,
    {
       sock->unsetStats();
       invalidateConnection(sock);
+      sock = NULL;
    }
+}
+
+IOWorkerResponse* IncomingPreprocessedMsgWork::createIOWorkerResponse(uint16_t osdID,
+   unsigned workerIndex)
+{
+   if(!returnSocketToListener || !sock)
+      return new IOWorkerResponse(NULL, osdID, workerIndex, false);
+
+   sock->unsetStats();
+
+   bool hasImmediateData = checkRDMASocketImmediateData();
+   if(!sock)
+      return new IOWorkerResponse(NULL, osdID, workerIndex, false);
+
+   Socket* responseSock = sock;
+   sock = NULL;
+
+   return new IOWorkerResponse(responseSock, osdID, workerIndex, hasImmediateData);
 }
 
 /**
@@ -204,55 +271,31 @@ void IncomingPreprocessedMsgWork::invalidateConnection(Socket* sock)
  */
 bool IncomingPreprocessedMsgWork::checkRDMASocketImmediateData(AbstractApp* app, Socket* sock)
 {
-   const char* logContextStr = "Work (incoming data => check RDMA immediate data)";
+   bool connectionError = false;
+   bool hasImmediateData = hasRDMASocketImmediateData(sock, &connectionError);
+   if(connectionError)
+      return true;
 
-
-   // the immediate data check only applies to RDMA sockets
-
-   if(sock->getSockType() != NICADDRTYPE_RDMA)
+   if(!hasImmediateData)
       return false;
 
+   StreamListenerV2* listener = app->getStreamListenerByFD(sock->getFD() );
+   StreamListenerV2::SockReturnPipeInfo returnInfo(
+      StreamListenerV2::SockPipeReturn_MSGDONE_WITHIMMEDIATE, sock);
 
-   // we got a RDMASocket
-
-   try
-   {
-      RDMASocket* rdmaSock = (RDMASocket*)sock;
-
-      if(!rdmaSock->nonblockingRecvCheck() )
-         return false; // no more data available at the moment
-
-
-      // we have immediate data available => inform the stream listener
-
-      LOG_DEBUG(logContextStr, Log_SPAM,
-         std::string("Got immediate data: ") + sock->getPeername() );
-
-      StreamListenerV2* listener = app->getStreamListenerByFD(sock->getFD() );
-      StreamListenerV2::SockReturnPipeInfo returnInfo(
-         StreamListenerV2::SockPipeReturn_MSGDONE_WITHIMMEDIATE, sock);
-
-      listener->getSockReturnFD()->write(&returnInfo, sizeof(returnInfo) );
-
-      return true;
-   }
-   catch(SocketDisconnectException& e)
-   {
-      LogContext(logContextStr).log(Log_DEBUG, std::string(e.what() ) );
-   }
-   catch(SocketException& e)
-   {
-      LogContext(logContextStr).log(Log_NOTICE,
-         std::string("Connection error: ") + sock->getPeername() + std::string(": ") +
-         std::string(e.what() ) );
-   }
-
-   // conn error occurred
-
-   delete(sock);
-
+   listener->getSockReturnFD()->write(&returnInfo, sizeof(returnInfo) );
    return true;
 }
 
+bool IncomingPreprocessedMsgWork::checkRDMASocketImmediateData()
+{
+   bool connectionError = false;
+   bool hasImmediateData = hasRDMASocketImmediateData(sock, &connectionError);
+   if(connectionError)
+   {
+      sock = NULL;
+      return false;
+   }
 
-
+   return hasImmediateData;
+}

@@ -1,4 +1,5 @@
 #include <common/toolkit/TimeFine.h>
+#include <common/components/streamlistenerv2/IncomingPreprocessedMsgWork.h>
 #include <common/components/worker/queue/RteRingQueue.h>
 #include "Worker.h"
 
@@ -219,6 +220,18 @@ void Worker::workLoop(QueueWorkType workType)
             }
          }
 #endif
+
+         if(isIOWorkType)
+         {
+            IncomingPreprocessedMsgWork* incomingWork = work->asIncomingPreprocessedMsgWork();
+            if(incomingWork)
+            {
+               IOWorkerResponse* response = incomingWork->createIOWorkerResponse(
+                  ioContext->osdID, ioContext->workerIndex);
+               ioContext->responseQueue->enqueueWait(response);
+               ioContext->responseQueue->notify();
+            }
+         }
 
          // cleanup
          delete(work);
