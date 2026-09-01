@@ -792,6 +792,8 @@ void App::streamListenersStart()
 
    for(StreamLisVecIter iter = streamLisVec.begin(); iter != streamLisVec.end(); iter++)
    {
+      ((StorageStreamListenerV2*)*iter)->registerIOWorkerResponseQueues();
+
       if(cfg->getTuneListenerNumaAffinity() )
          (*iter)->startOnNumaNode( (++nextNumaBindTarget) % numNumaNodes);
       else

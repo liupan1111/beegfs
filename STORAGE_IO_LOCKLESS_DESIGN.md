@@ -426,7 +426,7 @@ The IO worker sends `IOWorkerResponse` after `process()` returns:
 ```text
 work->process(...)
 if work is IncomingPreprocessedMsgWork:
-  response = work->detachIOWorkerResponse(osdID, workerIndex)
+  response = work->createIOWorkerResponse(osdID, workerIndex)
   responseQueue.enqueueWait(response)
   responseQueue.notify()
 delete work
