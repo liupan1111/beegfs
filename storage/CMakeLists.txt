@@ -105,6 +105,7 @@ add_library(
 	./source/components/benchmarker/StorageBenchSlave.cpp
 	./source/components/benchmarker/StorageBenchSlave.h
 	./source/components/streamlistenerv2/StorageStreamListenerV2.h
+	./source/components/streamlistenerv2/StorageStreamListenerV2.cpp
 	./source/components/buddyresyncer/BuddyResyncer.cpp
 	./source/components/buddyresyncer/BuddyResyncJob.h
 	./source/components/buddyresyncer/BuddyResyncerGatherSlave.cpp
