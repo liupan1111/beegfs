@@ -2,7 +2,7 @@
 
 ## 背景
 
-当前 storage mirror 写路径中，primary storage target 向 secondary storage target 转发 `WriteLocalFile` 时，会通过 secondary node 的 `NodeConnPool` 获取连接。
+当前 storage mirror 写路径中，primary storage target 向 secondary storage target 转发 `WriteLocalFile` 时，会通过 primary 进程中代表 secondary node 的 `Node` 对象上的 `NodeConnPool` 获取连接。
 
 相关调用链：
 
@@ -16,6 +16,20 @@ WriteLocalFileMsgEx::processIncoming()
 ```
 
 `NodeConnPool::mutex` 保护共享连接池状态，例如 `connList`、`availableConns`、`establishedConns`。高并发 mirror 写场景下，每个 `WriteLocalFile` mirror 请求都可能竞争这把共享锁。
+
+这里的 `NodeConnPool` 需要特别说明：它不是 secondary 机器上的连接池，而是 primary 进程本地维护的连接池。BeeGFS 会在本地进程中为远端 storage node 维护对应的 `Node` 对象，每个远端 `Node` 对象都有自己的 `NodeConnPool`。因此，primary 向 secondary 转发请求时，实际访问的是 primary 本地内存中“代表 secondary 的 Node 对象”的连接池。
+
+可以理解为：
+
+```text
+primary storage process
+  -> Node(remote storage A)
+       -> NodeConnPool(to remote storage A)
+  -> Node(remote storage B)
+       -> NodeConnPool(to remote storage B)
+```
+
+所以，`NodeConnPool` 的粒度是“每个远端 node 一个 pool”。但同一个远端 node 的 pool 会被 primary 进程里的多个 worker 线程共享，高并发写同一个 secondary node 时，这些 worker 会竞争同一把 `NodeConnPool::mutex`。
 
 本次优化范围很窄：
 
@@ -69,10 +83,18 @@ Worker(QueueWorkType_IO)
   -> IOWorkerContext
      -> WriteLocalFileMirrorConnPool
         -> 按 mirror node 分桶
-           -> 可用 mirror sockets
+           -> 最多 1 条可用 mirror socket
 ```
 
 这个连接池是单消费者、worker 私有的。正常 acquire/release 都发生在所属 IO worker 线程内，因此不需要 mutex。
+
+首版明确限制：
+
+```text
+每个 IO worker 对每个 mirror node 最多缓存 1 条 socket。
+```
+
+这个限制符合当前同步写模型：一个 IO worker 同一时刻只处理一个 `WriteLocalFile` work，因此同一时刻只需要一条到某个 mirror node 的转发连接。
 
 ### 使用范围
 
@@ -108,7 +130,7 @@ class WriteLocalFileMirrorConnPool
 接口规则：
 
 - `acquire()` 返回一个已连接、可用于向 mirror node 发送 `WriteLocalFile` 的 socket。
-- `release()` 只把健康 socket 放回本地连接池。
+- `release()` 只把健康 socket 放回本地连接池；如果该 mirror node 已经有缓存 socket，则关闭多余 socket。
 - `invalidate()` 从本地连接池移除失败 socket，并关闭它。
 - `dropNode()` 在 node 状态、target 映射或网络接口变化后，移除该 node 的所有 socket。
 - `shutdown()` 关闭当前 IO worker 拥有的所有 socket。
@@ -117,7 +139,7 @@ class WriteLocalFileMirrorConnPool
 
 ## 连接分桶
 
-每个 IO worker 本地连接池按 mirror node 存储 socket。
+每个 IO worker 本地连接池按 mirror node 存储 socket。每个 bucket 最多保存一条空闲 socket。
 
 key：
 
@@ -142,12 +164,14 @@ WriteLocalFileMsgEx::prepareMirroring()
 ```text
 localPool.acquire()
   -> 当前 mirror node bucket 没有已建立连接
-  -> 本地连接池自行创建新连接
+  -> 通过复用/抽取 NodeConnPool 的现有建连能力创建一条新连接
   -> 执行现有连接创建 / handshake / socket options 逻辑
   -> 将 socket 返回给 WriteLocalFile 路径
 ```
 
-每个 IO worker 维护自己的本地连接池。这个本地池的行为应与 `NodeConnPool` 保持一致，包括连接创建、连接销毁、连接可用状态维护、错误失效和等待逻辑。区别在于本地池只被一个 IO worker 访问，正常 acquire/release 不需要共享 mutex。
+每个 IO worker 维护自己的本地连接池。这个本地池不重新实现 BeeGFS 的完整建连策略，而是复用或抽取 `NodeConnPool` 中已有的建连能力，确保 TCP/RDMA 选择、socket options、认证、direct/indirect channel、net filter、fallback route 等语义保持一致。
+
+稳定状态下，本地 bucket 命中时不访问共享 `NodeConnPool::mutex`。只有 cache miss 或连接失效后重建时，才可能进入共享建连路径。
 
 ## IO Worker 连接数量
 
@@ -171,13 +195,13 @@ localLimitPerWorkerPerNode = 1
 node_a 到 node_b 的最大 IO 连接数 = nr_io_worker
 ```
 
-这要求配置满足：
+容量规划上建议满足：
 
 ```text
 nr_io_worker <= nr_conn_socks_pernode
 ```
 
-如果该约束不满足，首选调整配置，而不是让多个 IO worker 共享同一条本地池连接。共享连接会重新引入跨 worker 同步，破坏本地连接池去锁的核心目标。
+这个关系不是本地池自动受 `NodeConnPool` 限制，而是为了避免新增 worker-local mirror socket 后，整体 internode 连接数量超过预期。如果该建议不满足，首选调整配置或新增专门的本地 mirror 连接上限，而不是让多个 IO worker 共享同一条本地池连接。共享连接会重新引入跨 worker 同步，破坏本地连接池去锁的核心目标。
 
 本地连接池不应突破每 worker、每 mirror node 1 条 socket 的上限。连接失效后，该 worker 可以重新创建一条替代连接。
 
@@ -194,7 +218,16 @@ finishMirroring()
 
 成功写路径上，socket 不再归还给全局 `NodeConnPool`，而是继续由该 IO worker 本地连接池持有。
 
-如果 release 时本地 bucket 已满，说明该 socket 不应继续保留在本地池中。首版建议直接关闭该 socket 并减少本地 `established` 计数，避免把本地池 socket 再归还给全局 `NodeConnPool` 造成所有权混杂。
+如果 release 时本地 bucket 已满，说明该 socket 不应继续保留在本地池中。首版建议直接关闭该 socket，避免把本地池 socket 再归还给全局 `NodeConnPool` 造成所有权混杂。
+
+所有权规则：
+
+```text
+acquire() 成功返回后，socket 临时归 WriteLocalFileMsgExBase 持有。
+finishMirroring() 必须对该 socket 执行 release() 或 invalidate() 之一。
+release()/invalidate() 返回后，WriteLocalFileMsgExBase 必须把 mirrorToSock 置为 NULL。
+acquire() 抛异常时，调用者不持有任何新 socket；清理由 pool 内部完成。
+```
 
 ## 失败路径
 
@@ -215,7 +248,7 @@ localPool.invalidate(mirrorNode, mirrorToSock)
 mirrorToSock = NULL
 ```
 
-下一次写请求可以由本地连接池重新创建连接，并把新 socket 留在本地连接池中。
+下一次写请求可以由本地连接池重新创建连接，并把新 socket 留在本地连接池中。重试路径也必须使用同一个本地连接池，不能回退到 `mirrorToNode->getConnPool()`，否则热路径会重新引入共享锁。
 
 ## 与 WriteLocalFileMsgEx 的集成
 
@@ -299,7 +332,13 @@ all other message types       -> existing StreamListenerV2 direct/indirect routi
 
 - socket 级错误一律 invalidate。
 - worker shutdown 时关闭所有本地 socket。
-- 只在当前已有 node/interface invalidation 广播的位置增加显式 `dropNode()` 调用。
+- cache miss 或连接失效后的重建，重新读取当前 node/interface 状态。
+- 不从其他线程直接修改某个 IO worker 的本地连接池。
+
+后续增强：
+
+- 在当前已有 node/interface invalidation 广播的位置增加显式 `dropNode()` 调用。
+- 或者维护 generation number，让 IO worker 在下一次 `acquire()` 前发现状态变化并自行清理。
 
 ## 线程模型
 
@@ -325,7 +364,7 @@ all other message types       -> existing StreamListenerV2 direct/indirect routi
 ```text
 稳定状态下，mirror write acquire/release 只访问 IO worker 本地连接池。
 本地连接池命中时没有共享 mutex。
-本地连接池负责首次连接、补充连接、等待、销毁和错误恢复。
+cache miss 或连接失效后重建时，才复用共享建连路径。
 ```
 
 预期收益：
@@ -339,11 +378,11 @@ all other message types       -> existing StreamListenerV2 direct/indirect routi
 
 风险：连接数随 IO worker 数增加。
 
-缓解：每个 IO worker 到每个 mirror node 最多 1 条 socket，并要求 `nr_io_worker <= nr_conn_socks_pernode`。
+缓解：每个 IO worker 到每个 mirror node 最多 1 条 socket；将 `nr_io_worker <= nr_conn_socks_pernode` 作为容量规划建议，必要时新增独立的 local mirror socket 上限。
 
 风险：node 或 target 状态变化后残留过期 socket。
 
-缓解：首版先在所有 socket 错误上 invalidate；后续把 `dropNode()` 接入现有 node/interface update 路径。
+缓解：首版先在所有 socket 错误上 invalidate，并在 cache miss/reconnect 时读取当前状态；后续把 `dropNode()` 或 generation check 接入现有 node/interface update 路径。
 
 风险：socket 被归还给错误 owner。
 
@@ -360,7 +399,7 @@ all other message types       -> existing StreamListenerV2 direct/indirect routi
 ## 待定问题
 
 1. 哪条现有 node/interface update 路径负责调用 `dropNode()` 或发布 generation change？
-2. 首版是否同时覆盖 `WriteLocalFile` 和 `WriteLocalFileRDMA`，还是先只覆盖非 RDMA？
+2. cache miss 时，是新增 `NodeConnPool::createUnpooledStreamSocket()` 这类接口，还是抽出一个独立的建连 helper 供两个 pool 复用？
 
 ## 推荐首版实现
 
@@ -369,9 +408,10 @@ all other message types       -> existing StreamListenerV2 direct/indirect routi
 ```text
 IOWorkerContext 拥有 WriteLocalFileMirrorConnPool。
 Pool key 使用 mirror node numeric ID。
-每个 bucket 的连接上限为 1 条 socket。
-本地连接池自行完成连接创建、销毁、等待和失效处理。
-配置保证 nr_io_worker <= nr_conn_socks_pernode。
+每个 bucket 最多缓存 1 条 socket。
+本地连接池负责缓存、归还、销毁和失效处理。
+cache miss 时复用/抽取 NodeConnPool 的现有建连能力。
+容量规划上建议 nr_io_worker <= nr_conn_socks_pernode。
 只有 WriteLocalFileMsgEx mirror 路径使用该连接池。
 成功收到 WriteLocalFileResp 后，将 socket 归还到本地连接池。
 任何通信错误都关闭或 invalidate socket。
