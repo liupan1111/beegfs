@@ -9,6 +9,8 @@
 #define WRITEMSG_MIRROR_RETRIES_NUM    1
 
 class StorageTarget;
+class Node;
+class Socket;
 
 /**
  * Contains common data needed by implementations of the network protocol
@@ -43,6 +45,7 @@ class WriteLocalFileMsgExBase : public Msg
 
    private:
       Socket* mirrorToSock;
+      uint16_t mirrorTargetID;
       unsigned mirrorRetriesLeft;
 
    public:
@@ -51,6 +54,7 @@ class WriteLocalFileMsgExBase : public Msg
       WriteLocalFileMsgExBase() : Msg()
       {
          mirrorToSock = NULL;
+         mirrorTargetID = 0;
          mirrorRetriesLeft = WRITEMSG_MIRROR_RETRIES_NUM;
       }
 
@@ -66,6 +70,9 @@ class WriteLocalFileMsgExBase : public Msg
       FhgfsOpsErr sendToMirror(const char* buf, size_t bufLen, int64_t offset, int64_t toBeMirrored,
          SessionLocalFile* sessionLocalFile);
       FhgfsOpsErr finishMirroring(SessionLocalFile* sessionLocalFile, StorageTarget& target);
+      Socket* acquireMirrorSocket(Node& mirrorNode, uint16_t mirrorTargetID);
+      void releaseMirrorSocket(Node& mirrorNode, Socket* sock);
+      void invalidateMirrorSocket(Node& mirrorNode, Socket* sock);
 
       bool doSessionCheck();
 
@@ -210,4 +217,3 @@ class WriteLocalFileMsgSender : public WriteLocalFileMsg
 
 typedef WriteLocalFileMsgExBase<WriteLocalFileMsgSender,
                                 WriteLocalFileMsgSender::WriteState> WriteLocalFileMsgEx;
-

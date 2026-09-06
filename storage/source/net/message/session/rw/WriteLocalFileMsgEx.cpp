@@ -1,4 +1,5 @@
 #include <program/Program.h>
+#include <common/components/worker/Worker.h>
 #include <common/toolkit/MessagingTk.h>
 #include <common/toolkit/SessionTk.h>
 #include <common/toolkit/StorageTk.h>
@@ -565,6 +566,8 @@ FhgfsOpsErr WriteLocalFileMsgExBase<Msg, WriteState>::prepareMirroring(char* buf
       return FhgfsOpsErr_UNKNOWNTARGET;
    }
 
+   mirrorTargetID = secondaryTargetID;
+
    CombinedTargetState secondaryState;
 
    bool getSecondaryStateRes = targetStates->getState(secondaryTargetID, secondaryState);
@@ -635,7 +638,7 @@ FhgfsOpsErr WriteLocalFileMsgExBase<Msg, WriteState>::prepareMirroring(char* buf
       {
          // acquire connection to mirror node and send write msg...
 
-         mirrorToSock = mirrorToNode->getConnPool()->acquireStreamSocket();
+         mirrorToSock = acquireMirrorSocket(*mirrorToNode, secondaryTargetID);
 
          WriteLocalFileMsg mirrorWriteMsg(getClientNumID(), getFileHandleID(), getTargetID(),
             getPathInfo(), getAccessFlags(), getOffset(), getCount());
@@ -670,7 +673,7 @@ FhgfsOpsErr WriteLocalFileMsgExBase<Msg, WriteState>::prepareMirroring(char* buf
             "Msg: " + e.what() );
 
          if(mirrorToSock)
-            mirrorToNode->getConnPool()->invalidateStreamSocket(mirrorToSock);
+            invalidateMirrorSocket(*mirrorToNode, mirrorToSock);
 
          mirrorToSock = NULL;
       }
@@ -730,7 +733,7 @@ FhgfsOpsErr WriteLocalFileMsgExBase<Msg, WriteState>::sendToMirror(const char* b
 
             auto mirrorToNode = sessionLocalFile->getMirrorNode();
 
-            mirrorToSock = mirrorToNode->getConnPool()->acquireStreamSocket();
+            mirrorToSock = acquireMirrorSocket(*mirrorToNode, mirrorTargetID);
 
             WriteLocalFileMsg mirrorWriteMsg(getClientNumID(), getFileHandleID(),
                getTargetID(), getPathInfo(), getAccessFlags(), offset, toBeMirrored);
@@ -771,7 +774,7 @@ FhgfsOpsErr WriteLocalFileMsgExBase<Msg, WriteState>::sendToMirror(const char* b
             "Msg: " + e.what() );
 
          if(mirrorToSock)
-            sessionLocalFile->getMirrorNode()->getConnPool()->invalidateStreamSocket(mirrorToSock);
+            invalidateMirrorSocket(*sessionLocalFile->getMirrorNode(), mirrorToSock);
 
          mirrorToSock = NULL;
       }
@@ -858,7 +861,8 @@ FhgfsOpsErr WriteLocalFileMsgExBase<Msg, WriteState>::finishMirroring(SessionLoc
 
       // check mirror result and release mirror socket...
 
-      mirrorToNode->getConnPool()->releaseStreamSocket(mirrorToSock);
+      releaseMirrorSocket(*mirrorToNode, mirrorToSock);
+      mirrorToSock = NULL;
 
       writeRespMsg = (WriteLocalFileRespMsg*)respMsg.get();
       mirrorWriteRes = writeRespMsg->getValue();
@@ -913,9 +917,51 @@ FhgfsOpsErr WriteLocalFileMsgExBase<Msg, WriteState>::finishMirroring(SessionLoc
    // cleanup after communication error...
 
 cleanup_commerr:
-   mirrorToNode->getConnPool()->invalidateStreamSocket(mirrorToSock);
+   invalidateMirrorSocket(*mirrorToNode, mirrorToSock);
+   mirrorToSock = NULL;
 
    return FhgfsOpsErr_COMMUNICATION;
+}
+
+template <class Msg, typename WriteState>
+Socket* WriteLocalFileMsgExBase<Msg, WriteState>::acquireMirrorSocket(Node& mirrorNode,
+   uint16_t mirrorTargetID)
+{
+   IOWorkerContext* ioContext = Worker::getCurrentIOWorkerContext();
+   if(ioContext)
+      return ioContext->writeMirrorConnPool.acquire(mirrorNode.getNumID(),
+         mirrorNode.getConnPool(), mirrorTargetID);
+
+   return mirrorNode.getConnPool()->acquireStreamSocket();
+}
+
+template <class Msg, typename WriteState>
+void WriteLocalFileMsgExBase<Msg, WriteState>::releaseMirrorSocket(Node& mirrorNode, Socket* sock)
+{
+   IOWorkerContext* ioContext = Worker::getCurrentIOWorkerContext();
+   if(ioContext)
+   {
+      ioContext->writeMirrorConnPool.release(mirrorNode.getNumID(), mirrorNode.getConnPool(),
+         sock);
+      return;
+   }
+
+   mirrorNode.getConnPool()->releaseStreamSocket(sock);
+}
+
+template <class Msg, typename WriteState>
+void WriteLocalFileMsgExBase<Msg, WriteState>::invalidateMirrorSocket(Node& mirrorNode,
+   Socket* sock)
+{
+   IOWorkerContext* ioContext = Worker::getCurrentIOWorkerContext();
+   if(ioContext)
+   {
+      ioContext->writeMirrorConnPool.invalidate(mirrorNode.getNumID(), mirrorNode.getConnPool(),
+         sock);
+      return;
+   }
+
+   mirrorNode.getConnPool()->invalidateStreamSocket(sock);
 }
 
 template <class Msg, typename WriteState>
