@@ -38,6 +38,6 @@ $(call build-shared-library,\
 $(call build-test,\
    test-runner,\
    $(shell find ../tests -name '*.cpp'),\
-   beegfs-base common,\
+   beegfs-base common nl3-route,\
    ../tests,\
    $(COMMON_CODEGEN_OUTPUTS))

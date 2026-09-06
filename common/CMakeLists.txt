@@ -557,6 +557,7 @@ if(NOT BEEGFS_SKIP_TESTS)
 		./tests/TestTimerQueue.cpp
 		./tests/TestRteRingQueue.cpp
 		./tests/TestStreamListenerIOResponse.cpp
+		./tests/TestWriteLocalFileMirrorConnPool.cpp
 	)
 
 	target_link_libraries(
