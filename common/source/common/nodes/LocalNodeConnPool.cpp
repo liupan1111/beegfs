@@ -54,8 +54,10 @@ LocalNodeConnPool::~LocalNodeConnPool()
  * @throw SocketConnectException if all connection attempts fail, SocketException if other
  * connection problem occurs (e.g. during hand-shake)
  */
-Socket* LocalNodeConnPool::acquireStreamSocketEx(bool allowWaiting)
+Socket* LocalNodeConnPool::acquireStreamSocketEx(bool allowWaiting, bool pooled)
 {
+   (void)pooled;
+
    UnixConnWorker* worker = NULL;
 
    {

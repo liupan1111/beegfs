@@ -23,7 +23,7 @@ class LocalNodeConnPool : public NodeConnPool
       LocalNodeConnPool(Node& parentNode, NicAddressList& nicList);
       virtual ~LocalNodeConnPool();
 
-      Socket* acquireStreamSocketEx(bool allowWaiting);
+      Socket* acquireStreamSocketEx(bool allowWaiting, bool pooled = true) override;
       void releaseStreamSocket(Socket* sock);
       void invalidateStreamSocket(Socket* sock);
 
@@ -55,4 +55,3 @@ class LocalNodeConnPool : public NodeConnPool
       bool updateInterfaces(unsigned short streamPort, const NicAddressList& nicList);
 
 };
-

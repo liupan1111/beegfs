@@ -110,9 +110,12 @@ class NodeConnPool
       NodeConnPool& operator=(NodeConnPool&&) = delete;
 
       Socket* acquireStreamSocket();
-      virtual Socket* acquireStreamSocketEx(bool allowWaiting);
+      virtual Socket* acquireStreamSocketEx(bool allowWaiting, bool pooled = true);
       virtual void releaseStreamSocket(Socket* sock);
       virtual void invalidateStreamSocket(Socket* sock);
+
+      bool isStreamSocketReusable(Socket* sock);
+      void disconnectStreamSocket(Socket* sock);
 
       unsigned disconnectAndResetIdleStreams();
 
@@ -204,4 +207,3 @@ class NodeConnPool
 
       bool loadIpSourceMap();
 };
-

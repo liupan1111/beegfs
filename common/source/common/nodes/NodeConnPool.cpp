@@ -123,7 +123,7 @@ Socket* NodeConnPool::acquireStreamSocket()
  * @throw SocketConnectException if all connection attempts fail, SocketException if other
  * connection problem occurs (e.g. during hand-shake)
  */
-Socket* NodeConnPool::acquireStreamSocketEx(bool allowWaiting)
+Socket* NodeConnPool::acquireStreamSocketEx(bool allowWaiting, bool pooled)
 {
    PooledSocket* sock = NULL;
    uint16_t port;
@@ -132,7 +132,7 @@ Socket* NodeConnPool::acquireStreamSocketEx(bool allowWaiting)
 
    std::unique_lock<Mutex> mutexLock(mutex); // L O C K
 
-   if(!availableConns && (establishedConns == maxConns) )
+   if(pooled && !availableConns && (establishedConns == maxConns) )
    { // wait for a conn to become available (or disconnected)
 
       if(!allowWaiting)
@@ -144,7 +144,7 @@ Socket* NodeConnPool::acquireStreamSocketEx(bool allowWaiting)
          changeCond.wait(&mutex);
    }
 
-   if(likely(availableConns) )
+   if(pooled && likely(availableConns) )
    {
       // established connection available => grab it
 
@@ -173,7 +173,8 @@ Socket* NodeConnPool::acquireStreamSocketEx(bool allowWaiting)
    NicListCapabilities localNicCapsCopy = this->localNicCaps;
    IpSourceMap ipSrcMapCopy = this->ipSrcMap;
 
-   establishedConns++;
+   if(pooled)
+      establishedConns++;
 
    mutexLock.unlock(); // U N L O C K
 
@@ -307,6 +308,7 @@ Socket* NodeConnPool::acquireStreamSocketEx(bool allowWaiting)
          isPrimaryInterface = false;
 
          delete(sock);
+         sock = NULL;
       }
    } // end of connect loop
 
@@ -314,9 +316,12 @@ Socket* NodeConnPool::acquireStreamSocketEx(bool allowWaiting)
 
    if(iter != nicListCopy.end() )
    {
-      // success => add to list (as unavailable)
-      connList.push_back(sock);
-      statsAddNic(sock->getSockType() );
+      if(pooled)
+      {
+         // success => add to list (as unavailable)
+         connList.push_back(sock);
+         statsAddNic(sock->getSockType() );
+      }
 
       errState.setConnSuccess(sock->getPeerIP(), sock->getSockType() );
    }
@@ -324,7 +329,14 @@ Socket* NodeConnPool::acquireStreamSocketEx(bool allowWaiting)
    {
       // absolutely unable to connect
       sock = NULL;
-      establishedConns--;
+
+      if(pooled)
+      {
+         establishedConns--;
+
+         // we are not using this connection => notify next waiter
+         changeCond.signal();
+      }
 
       if(!errState.getWasLastTimeCompleteFail() )
       {
@@ -333,9 +345,6 @@ Socket* NodeConnPool::acquireStreamSocketEx(bool allowWaiting)
 
          errState.setCompleteFail();
       }
-
-      // we are not using this connection => notify next waiter
-      changeCond.signal();
    }
 
    if(!sock)
@@ -366,6 +375,32 @@ void NodeConnPool::releaseStreamSocket(Socket* sock)
    pooledSock->setAvailable(true);
 
    changeCond.signal();
+}
+
+bool NodeConnPool::isStreamSocketReusable(Socket* sock)
+{
+   PooledSocket* pooledSock = (PooledSocket*)sock;
+
+   return !pooledSock->getHasExpired(fallbackExpirationSecs) &&
+      !pooledSock->isCloseOnRelease();
+}
+
+void NodeConnPool::disconnectStreamSocket(Socket* sock)
+{
+   LogContext log("NodeConn (disconnect stream)");
+
+   try
+   {
+      sock->shutdownAndRecvDisconnect(NODECONNPOOL_SHUTDOWN_WAITTIMEMS);
+   }
+   catch(SocketException& e)
+   {
+   }
+
+   log.log(Log_DEBUG, std::string("Disconnected: ") +
+      boost::lexical_cast<std::string>(parentNode.getNodeType()) + "@" + sock->getPeername() );
+
+   delete(sock);
 }
 
 void NodeConnPool::invalidateStreamSocket(Socket* sock)
