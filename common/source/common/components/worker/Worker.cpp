@@ -10,6 +10,8 @@
 #define WORKER_IO_EPOLL_EVENTS 2
 #define WORKER_IO_DEQUEUE_BURST 64
 
+__thread IOWorkerContext* Worker::currentIOWorkerContext = NULL;
+
 Worker::Worker(const std::string& workerID, MultiWorkQueue* workQueue, QueueWorkType workType)
     : PThread(workerID),
       log(workerID),
@@ -160,7 +162,10 @@ void Worker::workLoop(QueueWorkType workType)
    int ioEpollFD = -1;
 
    if(isIOWorkType)
+   {
       ioEpollFD = initIOEpollFD();
+      currentIOWorkerContext = ioContext;
+   }
    else
       workQueue->incNumWorkers(); // add this worker to queue stats
 
@@ -239,7 +244,11 @@ void Worker::workLoop(QueueWorkType workType)
    }
 
    if(ioEpollFD != -1)
+   {
+      ioContext->writeMirrorConnPool.shutdown();
+      currentIOWorkerContext = NULL;
       close(ioEpollFD);
+   }
 }
 
 void Worker::waitForWorkByType(HighResolutionStats& newStats, PersonalWorkQueue* personalWorkQueue,

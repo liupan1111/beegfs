@@ -370,6 +370,8 @@ add_library(
 	./source/common/components/worker/queue/RteRingQueue.h
 	./source/common/components/worker/queue/RteRingQueue.cpp
 	./source/common/components/worker/queue/IOWorkerContext.h
+	./source/common/components/worker/queue/WriteLocalFileMirrorConnPool.h
+	./source/common/components/worker/queue/WriteLocalFileMirrorConnPool.cpp
 	./source/common/components/worker/queue/ListWorkContainer.h
 	./source/common/components/worker/queue/UserWorkContainer.h
 	./source/common/components/worker/queue/StreamListenerWorkQueue.h

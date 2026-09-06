@@ -1,5 +1,6 @@
 #pragma once
 
+#include <common/components/worker/queue/WriteLocalFileMirrorConnPool.h>
 #include <common/components/worker/queue/RteRingQueue.h>
 #include <common/Common.h>
 
@@ -16,6 +17,7 @@ struct IOWorkerContext
    std::unique_ptr<RteRingQueue> requestQueue;
    std::unique_ptr<RteRingQueue> responseQueue;
    std::unique_ptr<RteRingQueue> highPrioQueue;
+   WriteLocalFileMirrorConnPool writeMirrorConnPool;
    size_t load;
 };
 

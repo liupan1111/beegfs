@@ -42,6 +42,7 @@ class Worker : public PThread
       MultiWorkQueue* workQueue;
       QueueWorkType workType;
       IOWorkerContext* ioContext;
+      static __thread IOWorkerContext* currentIOWorkerContext;
 
       PersonalWorkQueue* personalWorkQueue;
 
@@ -95,6 +96,11 @@ class Worker : public PThread
             ioContext ? ioContext->highPrioQueue.get() : NULL);
       }
 
+      static IOWorkerContext* getCurrentIOWorkerContext()
+      {
+         return currentIOWorkerContext;
+      }
+
       IOWorkerContext* getIOWorkerContext() const
       {
          return this->ioContext;
@@ -120,4 +126,3 @@ class Worker : public PThread
          this->terminateWithFullQueue = false;
       }
 };
-

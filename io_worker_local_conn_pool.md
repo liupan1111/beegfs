@@ -87,7 +87,7 @@ Worker(QueueWorkType_IO)
   -> IOWorkerContext
      -> WriteLocalFileMirrorConnPool
         -> 按 mirror node 分桶
-           -> 最多 1 条可用 mirror socket
+           -> 最多 2 条可用 mirror socket
 ```
 
 这个连接池是单消费者、worker 私有的。正常 acquire/release 都发生在所属 IO worker 线程内，因此不需要 mutex。
@@ -95,10 +95,11 @@ Worker(QueueWorkType_IO)
 首版明确限制：
 
 ```text
-每个 IO worker 对每个 mirror node 最多缓存 1 条 socket。
+每个 IO worker 对每个 mirror node 最多保留 2 条 socket。
 ```
 
-这个限制符合当前同步写模型：一个 IO worker 同一时刻只处理一个 `WriteLocalFile` work，因此同一时刻只需要一条到某个 mirror node 的转发连接。
+当前同步写模型一次只会使用其中一条连接；两条是为未来多个副本可能落在同一 peer node、
+以及后续 mirror 写并行化预留的容量。两条 socket 彼此独立，不在 IO worker 之间共享。
 
 ### 使用范围
 
@@ -134,7 +135,7 @@ class WriteLocalFileMirrorConnPool
 接口规则：
 
 - `acquire()` 返回一个已连接、可用于向 mirror node 发送 `WriteLocalFile` 的 socket。
-- `release()` 只把健康 socket 放回本地连接池；如果该 mirror node 已经有缓存 socket，则关闭多余 socket。
+- `release()` 只把健康 socket 放回本地连接池；如果该 mirror node 的连接槽位已满，则关闭多余 socket。
 - `invalidate()` 从本地连接池移除失败 socket，并关闭它。
 - `dropNode()` 在 node 状态、target 映射或网络接口变化后，移除该 node 的所有 socket。
 - `shutdown()` 关闭当前 IO worker 拥有的所有 socket。
@@ -143,7 +144,7 @@ class WriteLocalFileMirrorConnPool
 
 ## 连接分桶
 
-每个 IO worker 本地连接池按 mirror node 存储 socket。每个 bucket 最多保存一条空闲 socket。
+每个 IO worker 本地连接池按 mirror node 存储 socket。每个 bucket 最多保留两条可用 socket。
 
 key：
 
@@ -177,9 +178,9 @@ localPool.acquire()
 
 这里的“复用/抽取建连能力”指复用建连代码和建连语义，不是从共享 `NodeConnPool` 中长期借走 socket。`WriteLocalFileMirrorConnPool` 创建和持有的 socket 不加入 `NodeConnPool::connList`，也不计入 `NodeConnPool::establishedConns`、`availableConns` 或 `maxConns`。
 
-稳定状态下，本地 bucket 命中时不访问共享 `NodeConnPool::mutex`。只有 cache miss 或连接失效后重建时，才可能进入共享建连路径。
+稳定状态下，local pool 命中时不访问共享 `NodeConnPool::mutex`。只有 pool miss 或连接失效后重建时，才可能进入共享建连路径。
 
-由于本地 mirror socket 不从共享 `NodeConnPool::connList` 中借用，cache miss 时也不应该调用 `NodeConnPool::acquireStreamSocket()`。因此，冷启动阶段不会出现多个 IO worker 同时抢同一个 `NodeConnPool::mutex`、修改 `establishedConns`、插入 `connList` 的问题。冷启动阶段仍然可能有多个 IO worker 同时向同一个 secondary node 建立独立连接，这属于并发建连压力，而不是共享连接池锁竞争。
+由于本地 mirror socket 不从共享 `NodeConnPool::connList` 中借用，pool miss 时也不应该调用 `NodeConnPool::acquireStreamSocket()`。因此，冷启动阶段不会出现多个 IO worker 同时抢同一个 `NodeConnPool::mutex`、修改 `establishedConns`、插入 `connList` 的问题。冷启动阶段仍然可能有多个 IO worker 同时向同一个 secondary node 建立独立连接，这属于并发建连压力，而不是共享连接池锁竞争。
 
 ## IO Worker 连接数量
 
@@ -191,27 +192,38 @@ send write data
 recv WriteLocalFileResp
 ```
 
-因此，一个 IO worker 到某个 mirror node 的连接数量为 1 即可：
+因此，为支持多个副本可能落在同一 peer node，一个 IO worker 到某个 mirror node 最多保留两条连接：
 
 ```text
-localLimitPerWorkerPerNode = 1
+localLimitPerWorkerPerNode = 2
 ```
 
-整体连接数量关系为：
+对某个 primary storage node `A` 和 mirror storage node `B`，本地 mirror socket 的上界为：
 
 ```text
-node_a 到 node_b 的最大 IO 连接数 = nr_io_worker
+localMirrorSockets(A, B)
+  <= 2 * sum(workerCount(target))
+     for each primary target on A that may mirror writes to B
 ```
 
-容量规划上建议满足：
+每个 target 的 `workerCount(target)` 可以是 `nr_io_worker`，但一个 node 可以承载多个
+primary target。因此，不能把 node 到 node 的上界简化成单个 `nr_io_worker`，更不能用
+`nr_io_worker <= nr_conn_socks_pernode` 描述它。
+
+`localMirrorSockets(A, B)` 与共享 `NodeConnPool` 的 `nr_conn_socks_pernode` 是独立的
+连接预算：前者是本地 mirror write pool 持有的连接数，后者只限制共享 `NodeConnPool`。
+容量规划时应把二者相加，并按 peer node 评估总连接数：
 
 ```text
-nr_io_worker <= nr_conn_socks_pernode
+totalConnections(A, B)
+  = localMirrorSockets(A, B) + sharedNodeConnPoolConnections(A, B)
 ```
 
-这个关系不是本地池自动受 `NodeConnPool` 限制，而是为了避免新增 worker-local mirror socket 后，整体 internode 连接数量超过预期。本地池需要独立的容量上限，不能占用共享 `NodeConnPool` 的连接额度。如果该建议不满足，首选调整配置或新增专门的本地 mirror 连接上限，而不是让多个 IO worker 共享同一条本地池连接。共享连接会重新引入跨 worker 同步，破坏本地连接池去锁的核心目标。
+如果这个总数超过网络、RDMA 设备或对端可接受的连接预算，应调整 worker 数量、target
+布局，或增加独立的 local mirror socket 上限；不应让多个 IO worker 共享同一条本地池连接。
+共享连接会重新引入跨 worker 同步，破坏本地连接池去锁的核心目标。
 
-本地连接池不应突破每 worker、每 mirror node 1 条 socket 的上限。连接失效后，该 worker 可以重新创建一条替代连接。
+本地连接池不应突破每 worker、每 mirror node 2 条 socket 的上限。连接失效后，该 worker 可以重新创建一条替代连接。
 
 ## 归还连接路径
 
@@ -340,7 +352,7 @@ all other message types       -> existing StreamListenerV2 direct/indirect routi
 
 - socket 级错误一律 invalidate。
 - worker shutdown 时关闭所有本地 socket。
-- cache miss 或连接失效后的重建，重新读取当前 node/interface 状态。
+- pool miss 或连接失效后的重建，重新读取当前 node/interface 状态。
 - 不从其他线程直接修改某个 IO worker 的本地连接池。
 
 后续增强：
@@ -373,7 +385,7 @@ all other message types       -> existing StreamListenerV2 direct/indirect routi
 稳定状态下，mirror write acquire/release 只访问 IO worker 本地连接池。
 本地连接池命中时没有共享 mutex。
 本地连接池命中时没有锁内 list scan。
-cache miss 或连接失效后重建时，才复用共享建连路径。
+pool miss 或连接失效后重建时，才复用共享建连路径。
 ```
 
 预期收益：
@@ -388,7 +400,10 @@ cache miss 或连接失效后重建时，才复用共享建连路径。
 
 风险：连接数随 IO worker 数增加。
 
-缓解：每个 IO worker 到每个 mirror node 最多 1 条 socket；将 `nr_io_worker <= nr_conn_socks_pernode` 作为容量规划建议，必要时新增独立的 local mirror socket 上限。
+缓解：每个 IO worker 到每个 mirror node 最多 2 条 socket。对同一对 node，连接上界是 `2` 倍
+primary node 上可能向该 mirror node 转发写入的所有 primary target 的 IO worker 数之和；
+它独立于 `nr_conn_socks_pernode`。容量规划时应同时统计 local mirror socket 与共享
+`NodeConnPool` socket，必要时新增独立的 per-peer local mirror socket 上限。
 
 风险：冷启动或连接失效后，多个 IO worker 可能同时向同一个 secondary node 建立连接。
 
@@ -396,7 +411,7 @@ cache miss 或连接失效后重建时，才复用共享建连路径。
 
 风险：node 或 target 状态变化后残留过期 socket。
 
-缓解：首版先在所有 socket 错误上 invalidate，并在 cache miss/reconnect 时读取当前状态；后续把 `dropNode()` 或 generation check 接入现有 node/interface update 路径。
+缓解：首版先在所有 socket 错误上 invalidate，并在 pool miss/reconnect 时读取当前状态；后续把 `dropNode()` 或 generation check 接入现有 node/interface update 路径。
 
 风险：socket 被归还给错误 owner。
 
@@ -413,7 +428,7 @@ cache miss 或连接失效后重建时，才复用共享建连路径。
 ## 待定问题
 
 1. 哪条现有 node/interface update 路径负责调用 `dropNode()` 或发布 generation change？
-2. cache miss 时，是新增 `NodeConnPool::createUnpooledStreamSocket()` 这类接口，还是抽出一个独立的建连 helper 供两个 pool 复用？无论选择哪种方式，新 socket 都不能加入共享 `NodeConnPool::connList`。
+2. pool miss 时，是新增 `NodeConnPool::createUnpooledStreamSocket()` 这类接口，还是抽出一个独立的建连 helper 供两个 pool 复用？无论选择哪种方式，新 socket 都不能加入共享 `NodeConnPool::connList`。
 
 ## 推荐首版实现
 
@@ -422,11 +437,12 @@ cache miss 或连接失效后重建时，才复用共享建连路径。
 ```text
 IOWorkerContext 拥有 WriteLocalFileMirrorConnPool。
 Pool key 使用 mirror node numeric ID。
-每个 bucket 最多缓存 1 条 socket。
-本地连接池负责缓存、归还、销毁和失效处理。
-cache miss 时复用/抽取 NodeConnPool 的现有建连能力。
+每个 bucket 最多保留 2 条 socket。
+本地连接池负责持有、归还、销毁和失效处理。
+pool miss 时复用/抽取 NodeConnPool 的现有建连能力。
 本地 mirror socket 不加入 NodeConnPool::connList，不占用共享 pool 的 maxConns。
-容量规划上建议 nr_io_worker <= nr_conn_socks_pernode。
+每个 peer node 的 local mirror socket 上界按所有相关 primary target 的 IO worker 数量之和的两倍
+计算；它与 `nr_conn_socks_pernode` 独立，容量规划时要与共享 pool 的连接数合并评估。
 只有 WriteLocalFileMsgEx mirror 路径使用该连接池。
 成功收到 WriteLocalFileResp 后，将 socket 归还到本地连接池。
 任何通信错误都关闭或 invalidate socket。
