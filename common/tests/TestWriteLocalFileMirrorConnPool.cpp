@@ -33,22 +33,25 @@ class PoolTestSocket : public Socket
       virtual int getFD() const { return -1; }
 };
 
-Socket* createSocket(NodeConnPool*)
+WriteLocalFileMirrorConnPool::Connection createConnection(NodeConnPool*, const std::string&,
+   bool isLocalMirrorNode)
 {
    Socket* sock = new PoolTestSocket();
    state->created.push_back(sock);
-   return sock;
+   return { isLocalMirrorNode ? WriteLocalFileMirrorConnPool::ConnectionKind_LOCAL :
+      WriteLocalFileMirrorConnPool::ConnectionKind_REMOTE, NULL, sock, NULL };
 }
 
-bool isSocketReusable(NodeConnPool*, Socket*)
+bool isConnectionReusable(const WriteLocalFileMirrorConnPool::Connection&)
 {
    return state->reusable;
 }
 
-void disconnectSocket(NodeConnPool*, Socket* sock)
+void disconnectConnection(WriteLocalFileMirrorConnPool::Connection& connection)
 {
-   state->disconnected.push_back(sock);
-   delete sock;
+   state->disconnected.push_back(connection.sock);
+   delete connection.sock;
+   connection.sock = NULL;
 }
 }
 
@@ -59,7 +62,7 @@ class WriteLocalFileMirrorConnPoolTest : public ::testing::Test
       WriteLocalFileMirrorConnPool pool;
 
       WriteLocalFileMirrorConnPoolTest() :
-         pool(createSocket, isSocketReusable, disconnectSocket)
+         pool(createConnection, isConnectionReusable, disconnectConnection)
       {
          testState.reusable = true;
          state = &testState;
@@ -75,9 +78,9 @@ TEST_F(WriteLocalFileMirrorConnPoolTest, reusesReleasedSocketForSameNode)
 {
    NumNodeID nodeID(1);
 
-   Socket* first = pool.acquire(nodeID, NULL, 10);
+   Socket* first = pool.acquire(nodeID, NULL, 10, false);
    pool.release(nodeID, NULL, first);
-   Socket* second = pool.acquire(nodeID, NULL, 10);
+   Socket* second = pool.acquire(nodeID, NULL, 10, false);
 
    EXPECT_EQ(second, first);
    EXPECT_EQ(testState.created.size(), 1u);
@@ -119,6 +122,30 @@ TEST_F(WriteLocalFileMirrorConnPoolTest, dropsThirdReleasedSocketForSameNode)
 
    pool.dropNode(nodeID);
    EXPECT_EQ(testState.disconnected.size(), 3u);
+}
+
+TEST_F(WriteLocalFileMirrorConnPoolTest, keepsOnlyOneLocalSocketPerNode)
+{
+   Socket* first = pool.acquire(NumNodeID(1), NULL, 10, true);
+   Socket* second = pool.acquire(NumNodeID(1), NULL, 10, true);
+   pool.release(NumNodeID(1), NULL, first);
+   pool.release(NumNodeID(1), NULL, second);
+
+   EXPECT_EQ(testState.disconnected.size(), 1u);
+   EXPECT_EQ(testState.disconnected[0], second);
+   EXPECT_EQ(pool.acquire(NumNodeID(1), NULL, 10, true), first);
+
+   pool.invalidate(NumNodeID(1), NULL, first);
+}
+
+TEST_F(WriteLocalFileMirrorConnPoolTest, dropsLocalSocketOnNodeRemoval)
+{
+   Socket* sock = pool.acquire(NumNodeID(1), NULL, 10, true);
+   pool.release(NumNodeID(1), NULL, sock);
+   pool.dropNode(NumNodeID(1));
+
+   ASSERT_EQ(testState.disconnected.size(), 1u);
+   EXPECT_EQ(testState.disconnected[0], sock);
 }
 
 TEST_F(WriteLocalFileMirrorConnPoolTest, keepsSeparateNodeBuckets)
