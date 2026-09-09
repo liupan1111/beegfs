@@ -1,6 +1,7 @@
 #include <common/app/log/LogContext.h>
 #include <common/app/AbstractApp.h>
 #include <common/components/worker/LocalConnWorker.h>
+#include <common/net/sock/SocketException.h>
 #include <common/threading/PThread.h>
 #include <common/nodes/Node.h>
 #include "LocalNodeConnPool.h"
@@ -221,6 +222,47 @@ void LocalNodeConnPool::invalidateStreamSocket(Socket* sock)
 
    delete(worker);
 
+}
+
+LocalNodeConnPool::LocalConnection LocalNodeConnPool::createLocalConnection(
+   const std::string& workerID)
+{
+   LocalConnWorker* worker = new LocalConnWorker(workerID);
+
+   try
+   {
+      worker->start();
+   }
+   catch(...)
+   {
+      delete(worker);
+      throw;
+   }
+
+   return LocalConnection(worker, worker->getClientEndpoint());
+}
+
+void LocalNodeConnPool::disconnectLocalConnection(LocalConnection& connection)
+{
+   if(!connection.worker)
+      return;
+
+   connection.worker->selfTerminate();
+
+   try
+   {
+      connection.worker->getClientEndpoint()->shutdownAndRecvDisconnect(
+         NODECONNPOOL_SHUTDOWN_WAITTIMEMS);
+   }
+   catch(SocketException&)
+   {
+   }
+
+   connection.worker->join();
+   delete(connection.worker);
+
+   connection.worker = NULL;
+   connection.socket = NULL;
 }
 
 bool LocalNodeConnPool::updateInterfaces(unsigned short streamPort, const NicAddressList& nicList)

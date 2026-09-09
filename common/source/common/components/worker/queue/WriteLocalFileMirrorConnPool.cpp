@@ -1,34 +1,61 @@
 #include <common/components/worker/queue/WriteLocalFileMirrorConnPool.h>
+#include <common/app/AbstractApp.h>
+#include <common/app/log/LogContext.h>
+#include <common/net/message/AbstractNetMessageFactory.h>
+#include <common/nodes/LocalNodeConnPool.h>
 #include <common/nodes/NodeConnPool.h>
+#include <common/toolkit/StringTk.h>
 
 namespace
 {
-Socket* createDefaultSocket(NodeConnPool* connPool)
+WriteLocalFileMirrorConnPool::Connection createDefaultConnection(NodeConnPool* connPool,
+   const std::string& workerID, bool isLocalMirrorNode)
 {
-   return connPool->acquireStreamSocketEx(true, false);
+   if(isLocalMirrorNode)
+   {
+      LocalNodeConnPool* localPool = static_cast<LocalNodeConnPool*>(connPool);
+      LocalNodeConnPool::LocalConnection connection = localPool->createLocalConnection(workerID);
+      return { WriteLocalFileMirrorConnPool::ConnectionKind_LOCAL, connPool, connection.socket,
+         connection.worker };
+   }
+
+   return { WriteLocalFileMirrorConnPool::ConnectionKind_REMOTE, connPool,
+      connPool->acquireStreamSocketEx(true, false), NULL };
 }
 
-bool isDefaultSocketReusable(NodeConnPool* connPool, Socket* sock)
+bool isDefaultConnectionReusable(const WriteLocalFileMirrorConnPool::Connection& connection)
 {
-   return connPool->isStreamSocketReusable(sock);
+   return connection.kind == WriteLocalFileMirrorConnPool::ConnectionKind_LOCAL ||
+      connection.ownerPool->isStreamSocketReusable(connection.sock);
 }
 
-void disconnectDefaultSocket(NodeConnPool* connPool, Socket* sock)
+void disconnectDefaultConnection(WriteLocalFileMirrorConnPool::Connection& connection)
 {
-   connPool->disconnectStreamSocket(sock);
+   if(connection.kind == WriteLocalFileMirrorConnPool::ConnectionKind_LOCAL)
+   {
+      LocalNodeConnPool::LocalConnection localConnection(connection.localWorker, connection.sock);
+      static_cast<LocalNodeConnPool*>(connection.ownerPool)->disconnectLocalConnection(
+         localConnection);
+      connection.localWorker = NULL;
+      connection.sock = NULL;
+      return;
+   }
+
+   connection.ownerPool->disconnectStreamSocket(connection.sock);
+   connection.sock = NULL;
 }
 }
 
 WriteLocalFileMirrorConnPool::WriteLocalFileMirrorConnPool() :
-   createSocket(createDefaultSocket), isSocketReusable(isDefaultSocketReusable),
-   disconnectSocket(disconnectDefaultSocket)
+   numCreatedLocalWorkers(0), createConnection(createDefaultConnection),
+   isConnectionReusable(isDefaultConnectionReusable), disconnectConnection(disconnectDefaultConnection)
 {
 }
 
-WriteLocalFileMirrorConnPool::WriteLocalFileMirrorConnPool(CreateSocketFn createSocket,
-   IsSocketReusableFn isSocketReusable, DisconnectSocketFn disconnectSocket) :
-   createSocket(createSocket), isSocketReusable(isSocketReusable),
-   disconnectSocket(disconnectSocket)
+WriteLocalFileMirrorConnPool::WriteLocalFileMirrorConnPool(CreateConnectionFn createConnection,
+   IsConnectionReusableFn isConnectionReusable, DisconnectConnectionFn disconnectConnection) :
+   numCreatedLocalWorkers(0), createConnection(createConnection),
+   isConnectionReusable(isConnectionReusable), disconnectConnection(disconnectConnection)
 {
 }
 
@@ -38,7 +65,7 @@ WriteLocalFileMirrorConnPool::~WriteLocalFileMirrorConnPool()
 }
 
 Socket* WriteLocalFileMirrorConnPool::acquire(NumNodeID nodeID, NodeConnPool* connPool,
-   uint16_t mirrorTargetID)
+   uint16_t mirrorTargetID, bool isLocalMirrorNode)
 {
    (void)mirrorTargetID;
 
@@ -47,15 +74,23 @@ Socket* WriteLocalFileMirrorConnPool::acquire(NumNodeID nodeID, NodeConnPool* co
    if(iter != availableSockets.end() && iter->second.numSockets)
    {
       SocketBucket& socketBucket = iter->second;
-      Socket* sock = socketBucket.sockets[--socketBucket.numSockets].sock;
+      Connection connection = socketBucket.sockets[--socketBucket.numSockets];
 
       if(!socketBucket.numSockets)
          availableSockets.erase(iter);
 
-      return sock;
+      activeConnections[connection.sock] = connection;
+      return connection.sock;
    }
 
-   return createSocket(connPool);
+   std::string workerID;
+   if(isLocalMirrorNode)
+      workerID = "WriteLocalFileLocalConnWorker-" + StringTk::uintToStr(mirrorTargetID) + "-" +
+         StringTk::uintToStr(++numCreatedLocalWorkers);
+
+   Connection connection = createConnection(connPool, workerID, isLocalMirrorNode);
+   activeConnections[connection.sock] = connection;
+   return connection.sock;
 }
 
 void WriteLocalFileMirrorConnPool::release(NumNodeID nodeID, NodeConnPool* connPool, Socket* sock)
@@ -63,20 +98,27 @@ void WriteLocalFileMirrorConnPool::release(NumNodeID nodeID, NodeConnPool* connP
    if(!sock)
       return;
 
-   if(!isSocketReusable(connPool, sock) )
+   auto activeIter = activeConnections.find(sock);
+   if(activeIter == activeConnections.end() )
+      return;
+
+   Connection connection = activeIter->second;
+   activeConnections.erase(activeIter);
+
+   if(!isConnectionReusable(connection) )
    {
-      disconnect(connPool, sock);
+      disconnect(connection);
       return;
    }
 
    SocketBucket& socketBucket = availableSockets[nodeID];
-   if(socketBucket.numSockets == MAX_SOCKETS_PER_NODE)
+   if(socketBucket.numSockets == getMaxSockets(connection))
    {
-      disconnect(connPool, sock);
+      disconnect(connection);
       return;
    }
 
-   socketBucket.sockets[socketBucket.numSockets++] = { connPool, sock };
+   socketBucket.sockets[socketBucket.numSockets++] = connection;
 }
 
 void WriteLocalFileMirrorConnPool::invalidate(NumNodeID nodeID, NodeConnPool* connPool,
@@ -84,6 +126,15 @@ void WriteLocalFileMirrorConnPool::invalidate(NumNodeID nodeID, NodeConnPool* co
 {
    if(!sock)
       return;
+
+   auto activeIter = activeConnections.find(sock);
+   if(activeIter != activeConnections.end() )
+   {
+      Connection connection = activeIter->second;
+      activeConnections.erase(activeIter);
+      disconnect(connection);
+      return;
+   }
 
    auto iter = availableSockets.find(nodeID);
    if(iter != availableSockets.end() )
@@ -95,16 +146,19 @@ void WriteLocalFileMirrorConnPool::invalidate(NumNodeID nodeID, NodeConnPool* co
          if(socketBucket.sockets[i].sock != sock)
             continue;
 
+         Connection connection = socketBucket.sockets[i];
          socketBucket.sockets[i] = socketBucket.sockets[--socketBucket.numSockets];
 
          if(!socketBucket.numSockets)
             availableSockets.erase(iter);
 
-         break;
+         disconnect(connection);
+         return;
       }
    }
 
-   disconnect(connPool, sock);
+   Connection connection(ConnectionKind_REMOTE, connPool, sock);
+   disconnect(connection);
 }
 
 void WriteLocalFileMirrorConnPool::dropNode(NumNodeID nodeID)
@@ -115,7 +169,7 @@ void WriteLocalFileMirrorConnPool::dropNode(NumNodeID nodeID)
 
    SocketBucket& socketBucket = iter->second;
    for(unsigned i = 0; i < socketBucket.numSockets; i++)
-      disconnect(socketBucket.sockets[i].ownerPool, socketBucket.sockets[i].sock);
+      disconnect(socketBucket.sockets[i]);
 
    availableSockets.erase(iter);
 }
@@ -124,12 +178,18 @@ void WriteLocalFileMirrorConnPool::shutdown()
 {
    for(auto iter = availableSockets.begin(); iter != availableSockets.end(); iter++)
       for(unsigned i = 0; i < iter->second.numSockets; i++)
-         disconnect(iter->second.sockets[i].ownerPool, iter->second.sockets[i].sock);
+         disconnect(iter->second.sockets[i]);
 
    availableSockets.clear();
 }
 
-void WriteLocalFileMirrorConnPool::disconnect(NodeConnPool* ownerPool, Socket* sock)
+void WriteLocalFileMirrorConnPool::disconnect(Connection& connection)
 {
-   disconnectSocket(ownerPool, sock);
+   disconnectConnection(connection);
+}
+
+unsigned WriteLocalFileMirrorConnPool::getMaxSockets(const Connection& connection) const
+{
+   return connection.kind == ConnectionKind_LOCAL ? MAX_LOCAL_SOCKETS_PER_NODE :
+      MAX_REMOTE_SOCKETS_PER_NODE;
 }

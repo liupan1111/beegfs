@@ -929,8 +929,12 @@ Socket* WriteLocalFileMsgExBase<Msg, WriteState>::acquireMirrorSocket(Node& mirr
 {
    IOWorkerContext* ioContext = Worker::getCurrentIOWorkerContext();
    if(ioContext)
+   {
+      bool isLocalMirrorNode =
+         mirrorNode.getNumID() == Program::getApp()->getLocalNode().getNumID();
       return ioContext->writeMirrorConnPool.acquire(mirrorNode.getNumID(),
-         mirrorNode.getConnPool(), mirrorTargetID);
+         mirrorNode.getConnPool(), mirrorTargetID, isLocalMirrorNode);
+   }
 
    return mirrorNode.getConnPool()->acquireStreamSocket();
 }

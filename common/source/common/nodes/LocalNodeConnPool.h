@@ -11,6 +11,8 @@
 typedef std::list<UnixConnWorker*> UnixConnWorkerList;
 typedef UnixConnWorkerList::iterator UnixConnWorkerListIter;
 
+class LocalConnWorker;
+
 /**
  * This is the conn pool which is used when a node sends network messages to itself, e.g. like a
  * single mds would do in case of an incoming mkdir msg.
@@ -20,12 +22,26 @@ typedef UnixConnWorkerList::iterator UnixConnWorkerListIter;
 class LocalNodeConnPool : public NodeConnPool
 {
    public:
+      struct LocalConnection
+      {
+         LocalConnWorker* worker;
+         Socket* socket;
+
+         LocalConnection(LocalConnWorker* worker = NULL, Socket* socket = NULL) :
+            worker(worker), socket(socket)
+         {
+         }
+      };
+
       LocalNodeConnPool(Node& parentNode, NicAddressList& nicList);
       virtual ~LocalNodeConnPool();
 
       Socket* acquireStreamSocketEx(bool allowWaiting, bool pooled = true) override;
       void releaseStreamSocket(Socket* sock);
       void invalidateStreamSocket(Socket* sock);
+
+      LocalConnection createLocalConnection(const std::string& workerID);
+      void disconnectLocalConnection(LocalConnection& connection);
 
    private:
       NicAddressList nicList;
