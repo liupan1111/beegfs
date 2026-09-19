@@ -5,6 +5,17 @@
 class TestAsyncIORequest : public AsyncIORequest
 {
    public:
+      TestAsyncIORequest(bool* cancelled = NULL, bool* destroyed = NULL) :
+         cancelled(cancelled), destroyed(destroyed)
+      {
+      }
+
+      ~TestAsyncIORequest()
+      {
+         if(destroyed)
+            *destroyed = true;
+      }
+
       bool start()
       {
          return true;
@@ -18,7 +29,30 @@ class TestAsyncIORequest : public AsyncIORequest
       {
          return false;
       }
+
+      void cancel()
+      {
+         if(cancelled)
+            *cancelled = true;
+      }
+
+   private:
+      bool* cancelled;
+      bool* destroyed;
 };
+
+struct RequestCompletionTracker
+{
+   unsigned completions;
+   bool requestDestroyed;
+};
+
+static void trackRequestCompletion(void* context, AsyncIORequest*)
+{
+   RequestCompletionTracker* tracker = (RequestCompletionTracker*)context;
+   tracker->completions++;
+   EXPECT_FALSE(tracker->requestDestroyed);
+}
 
 TEST(IOWorkerAsyncContext, requestSlotsMatchBufferPool)
 {
@@ -55,4 +89,33 @@ TEST(IOWorkerAsyncContext, activeRequestsConsumeSlots)
    EXPECT_EQ(0u, context.getNumActiveRequests());
    EXPECT_EQ(IOWorkerAsyncContext::DEFAULT_ASYNC_REQUEST_SLOTS,
       context.getNumAvailableRequestSlots());
+}
+
+TEST(IOWorkerAsyncContext, completionHandlerRunsBeforeRequestDestruction)
+{
+   IOWorkerAsyncContext context(NULL);
+   RequestCompletionTracker tracker = {0, false};
+   context.setRequestCompletionHandler(trackRequestCompletion, &tracker);
+
+   TestAsyncIORequest* request = new TestAsyncIORequest(NULL, &tracker.requestDestroyed);
+   context.addRequest(request);
+   context.completeRequest(request);
+
+   EXPECT_EQ(1u, tracker.completions);
+   EXPECT_TRUE(tracker.requestDestroyed);
+}
+
+TEST(IOWorkerAsyncContext, cancellationRunsCompletionHandlerBeforeRequestDestruction)
+{
+   IOWorkerAsyncContext context(NULL);
+   RequestCompletionTracker tracker = {0, false};
+   bool cancelled = false;
+   context.setRequestCompletionHandler(trackRequestCompletion, &tracker);
+
+   context.addRequest(new TestAsyncIORequest(&cancelled, &tracker.requestDestroyed));
+   context.cancelAllRequests();
+
+   EXPECT_EQ(1u, tracker.completions);
+   EXPECT_TRUE(cancelled);
+   EXPECT_TRUE(tracker.requestDestroyed);
 }
