@@ -202,6 +202,35 @@ ssize_t RDMASocketImpl::write(const void *buf, size_t len, unsigned lkey, const 
    size_t status = IBVSocket_write(this->ibvsock, (char *)buf, len, lkey, rbuf, rkey, localBufLen);
    return (status == 0) ? len : -1;
 }
+
+ssize_t RDMASocketImpl::postAsyncRead(const void* buf, size_t len, unsigned lkey, uint64_t rbuf,
+   unsigned rkey, size_t localBufLen, uint64_t* outWRID)
+{
+   return IBVSocket_postReadAsync(this->ibvsock, (const char*)buf, len, lkey, rbuf, rkey,
+      localBufLen, outWRID);
+}
+
+ssize_t RDMASocketImpl::postAsyncWrite(const void* buf, size_t len, unsigned lkey, uint64_t rbuf,
+   unsigned rkey, size_t localBufLen, uint64_t* outWRID)
+{
+   return IBVSocket_postWriteAsync(this->ibvsock, (const char*)buf, len, lkey, rbuf, rkey,
+      localBufLen, outWRID);
+}
+
+int RDMASocketImpl::consumeSendCompletion(uint64_t expectedWRID)
+{
+   return IBVSocket_consumeSendCompletion(this->ibvsock, expectedWRID);
+}
+
+int RDMASocketImpl::drainSendCompletion()
+{
+   return IBVSocket_drainSendCompletion(this->ibvsock);
+}
+
+int RDMASocketImpl::getSendCompletionFD() const
+{
+   return IBVSocket_getSendCompletionFD(this->ibvsock);
+}
 #endif /* BEEGFS_NVFS */
 
 /**

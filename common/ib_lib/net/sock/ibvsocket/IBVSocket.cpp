@@ -2,6 +2,7 @@
 #include "common/net/sock/IPAddress.h"
 
 #include <cerrno>
+#include <fcntl.h>
 #include <sys/epoll.h>
 
 #include <common/app/log/Logger.h>
@@ -1112,9 +1113,31 @@ bool __IBVSocket_createCommContext(IBVSocket* _this, struct rdma_cm_id* cm_id,
       goto err_cleanup;
    }
 
+#ifdef BEEGFS_NVFS
+   commContext->sendCompChannel = ibv_create_comp_channel(commContext->context);
+   if(!commContext->sendCompChannel)
+   {
+      LOG(SOCKLIB, WARNING, "Couldn't create send comp channel.");
+      goto err_cleanup;
+   }
+
+   int sendChannelFlags = fcntl(commContext->sendCompChannel->fd, F_GETFL, 0);
+   if(sendChannelFlags == -1 ||
+      fcntl(commContext->sendCompChannel->fd, F_SETFL, sendChannelFlags | O_NONBLOCK) == -1)
+   {
+      LOG(SOCKLIB, WARNING, "Couldn't make send comp channel nonblocking.");
+      goto err_cleanup;
+   }
+#endif /* BEEGFS_NVFS */
+
    // note: 1+commCfg->bufNum here for the RDMA write usedBufs reset work (=> flow/flood control)
    commContext->sendCQ = ibv_create_cq(
-      commContext->context, 1+commCfg->bufNum, NULL, NULL, 
+      commContext->context, 1+commCfg->bufNum, NULL,
+#ifdef BEEGFS_NVFS
+      commContext->sendCompChannel,
+#else
+      NULL,
+#endif /* BEEGFS_NVFS */
       rand()%commContext->context->num_comp_vectors);
    if(!commContext->sendCQ)
    {
@@ -1221,6 +1244,14 @@ void __IBVSocket_cleanupCommContext(struct rdma_cm_id* cm_id, IBVCommContext* co
       if(ibv_destroy_cq(commContext->sendCQ) )
          LOG(SOCKLIB, WARNING, "Failed to destroy sendCQ.");
    }
+
+#ifdef BEEGFS_NVFS
+   if(commContext->sendCompChannel)
+   {
+      if(ibv_destroy_comp_channel(commContext->sendCompChannel) )
+         LOG(SOCKLIB, WARNING, "Failed to destroy sendCompChannel.");
+   }
+#endif /* BEEGFS_NVFS */
 
    if(commContext->recvCQ)
    {
@@ -1653,6 +1684,149 @@ static int __IBVSocket_postRDMA(IBVSocket* _this, ibv_wr_opcode opcode,
    return waitRes;
 }
 
+static int __IBVSocket_drainSendCompletionEvents(IBVCommContext* commContext)
+{
+   for(;;)
+   {
+      struct ibv_cq* eventCQ;
+      void* eventContext;
+      int getEventRes = ibv_get_cq_event(commContext->sendCompChannel, &eventCQ, &eventContext);
+
+      if(getEventRes)
+      {
+         if(errno == EAGAIN)
+            return 0;
+
+         LOG(SOCKLIB, WARNING, "Failed to get send cq event.");
+         return -1;
+      }
+
+      if(unlikely(eventCQ != commContext->sendCQ) )
+      {
+         LOG(SOCKLIB, WARNING, "Send CQ event for unknown CQ.", eventCQ);
+         return -1;
+      }
+
+      ibv_ack_cq_events(eventCQ, 1);
+   }
+}
+
+static int __IBVSocket_pollSendCompletion(IBVCommContext* commContext, uint64_t expectedWRID)
+{
+   int found = 0;
+   struct ibv_wc wc[IBVSOCKET_WC_ENTRIES];
+
+   for(;;)
+   {
+      int numWC = ibv_poll_cq(commContext->sendCQ, IBVSOCKET_WC_ENTRIES, wc);
+      if(unlikely(numWC < 0) )
+      {
+         LOG(SOCKLIB, WARNING, "Bad ibv_poll_cq result.", numWC);
+         return -1;
+      }
+
+      if(!numWC)
+         return found;
+
+      for(int i = 0; i < numWC; i++)
+      {
+         if(unlikely(wc[i].status != IBV_WC_SUCCESS) )
+         {
+            LOG(SOCKLIB, DEBUG, "Connection error.", wc[i].status);
+            return -1;
+         }
+
+         switch(wc[i].opcode)
+         {
+            case IBV_WC_RDMA_WRITE:
+            case IBV_WC_RDMA_READ:
+            {
+               if(unlikely(wc[i].wr_id != expectedWRID) )
+               {
+                  LOG(SOCKLIB, WARNING, "Unexpected async RDMA completion.", wc[i].wr_id);
+                  return -1;
+               }
+
+               found = 1;
+            } break;
+
+            case IBV_WC_SEND:
+            {
+               if(unlikely(!commContext->incompleteSend.numAvailable) )
+               {
+                  LOG(SOCKLIB, WARNING, "Received bad/unexpected send completion.");
+                  return -1;
+               }
+
+               commContext->incompleteSend.numAvailable--;
+            } break;
+
+            default:
+            {
+               LOG(SOCKLIB, WARNING, "Bad/unexpected completion opcode.", wc[i].opcode);
+               return -1;
+            } break;
+         }
+      }
+   }
+}
+
+static int __IBVSocket_postRDMAAsync(IBVSocket* _this, ibv_wr_opcode opcode,
+   char* localBuf, int bufLen, unsigned lkey, uint64_t remoteBuf, unsigned rkey,
+   size_t localBufLen, uint64_t* outWRID)
+{
+   IBVCommContext* commContext = _this->commContext;
+   struct ibv_sge list;
+   struct ibv_send_wr wr;
+   struct ibv_send_wr* badWR;
+
+   if(unlikely(lkey == 0) )
+   {
+      if(unlikely(!__IBVSocket_getBufferKey(commContext, localBuf, localBufLen, &lkey)) )
+      {
+         LOG(SOCKLIB, WARNING, "ibv_postRDMAAsync(): no local key.");
+         return -1;
+      }
+   }
+
+   if(unlikely(ibv_req_notify_cq(commContext->sendCQ, 0)) )
+   {
+      LOG(SOCKLIB, WARNING, "Couldn't request send CQ notification.");
+      return -1;
+   }
+
+   list.addr = (uint64_t)localBuf;
+   list.length = bufLen;
+   list.lkey = lkey;
+
+   wr.wr_id = __atomic_fetch_add(&commContext->wr_id, 1, __ATOMIC_SEQ_CST);
+   wr.next = NULL;
+   wr.sg_list = &list;
+   wr.num_sge = 1;
+   wr.opcode = opcode;
+   wr.send_flags = IBV_SEND_SIGNALED;
+   wr.wr.rdma.remote_addr = remoteBuf;
+   wr.wr.rdma.rkey = rkey;
+
+   int postRes = ibv_post_send(commContext->qp, &wr, &badWR);
+   if(unlikely(postRes) )
+   {
+      LOG(SOCKLIB, WARNING, "ibv_post_send() failed.", sysErr(postRes));
+      return -1;
+   }
+
+   *outWRID = wr.wr_id;
+
+   int completionRes = __IBVSocket_pollSendCompletion(commContext, wr.wr_id);
+   if(completionRes < 0)
+      return -1;
+
+   if(__IBVSocket_drainSendCompletionEvents(commContext) )
+      return -1;
+
+   return completionRes;
+}
+
 int __IBVSocket_postWrite(IBVSocket* _this, char* localBuf, int bufLen,
    unsigned lkey, uint64_t remoteBuf, unsigned rkey, size_t localBufLen)
 {
@@ -1677,6 +1851,53 @@ ssize_t IBVSocket_write(IBVSocket* _this, const char* buf, size_t bufLen,
  unsigned lkey, const uint64_t rbuf, unsigned rkey, size_t localBufLen)
 {
    return __IBVSocket_postWrite(_this, (char *)buf, bufLen, lkey, rbuf, rkey, localBufLen);
+}
+
+int IBVSocket_postReadAsync(IBVSocket* _this, const char* buf, size_t bufLen,
+   unsigned lkey, uint64_t rbuf, unsigned rkey, size_t localBufLen, uint64_t* outWRID)
+{
+   return __IBVSocket_postRDMAAsync(_this, IBV_WR_RDMA_READ, (char*)buf, bufLen, lkey, rbuf,
+      rkey, localBufLen, outWRID);
+}
+
+int IBVSocket_postWriteAsync(IBVSocket* _this, const char* buf, size_t bufLen,
+   unsigned lkey, uint64_t rbuf, unsigned rkey, size_t localBufLen, uint64_t* outWRID)
+{
+   return __IBVSocket_postRDMAAsync(_this, IBV_WR_RDMA_WRITE, (char*)buf, bufLen, lkey, rbuf,
+      rkey, localBufLen, outWRID);
+}
+
+int IBVSocket_consumeSendCompletion(IBVSocket* _this, uint64_t expectedWRID)
+{
+   IBVCommContext* commContext = _this->commContext;
+
+   if(__IBVSocket_drainSendCompletionEvents(commContext) )
+      return -1;
+
+   if(unlikely(ibv_req_notify_cq(commContext->sendCQ, 0)) )
+   {
+      LOG(SOCKLIB, WARNING, "Couldn't request send CQ notification.");
+      return -1;
+   }
+
+   int completionRes = __IBVSocket_pollSendCompletion(commContext, expectedWRID);
+   if(completionRes < 0)
+      return -1;
+
+   if(__IBVSocket_drainSendCompletionEvents(commContext) )
+      return -1;
+
+   return completionRes;
+}
+
+int IBVSocket_drainSendCompletion(IBVSocket* _this)
+{
+   IBVCommContext* commContext = _this->commContext;
+
+   if(__IBVSocket_drainSendCompletionEvents(commContext) )
+      return -1;
+
+   return __IBVSocket_pollSendCompletion(commContext, 0);
 }
 
 #endif /* BEEGFS_NVFS */
@@ -2468,6 +2689,15 @@ int IBVSocket_getRecvCompletionFD(IBVSocket* _this)
    return commContext ? commContext->recvCompChannel->fd : (-1);
 }
 
+#ifdef BEEGFS_NVFS
+int IBVSocket_getSendCompletionFD(IBVSocket* _this)
+{
+   IBVCommContext* commContext = _this->commContext;
+
+   return commContext ? commContext->sendCompChannel->fd : (-1);
+}
+#endif /* BEEGFS_NVFS */
+
 int IBVSocket_getConnManagerFD(IBVSocket* _this)
 {
    return _this->cm_channel ? _this->cm_channel->fd : (-1);
@@ -2508,4 +2738,3 @@ bool IBVSocket_connectionRejection(IBVSocket* _this)
 
    return false;
 }
-

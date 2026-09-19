@@ -51,6 +51,12 @@ extern ssize_t IBVSocket_write(IBVSocket* _this, const char* buf, size_t bufLen,
    const uint64_t rbuf, unsigned rkey, size_t localBufLen);
 extern ssize_t IBVSocket_read(IBVSocket* _this, const char* buf, size_t bufLen, unsigned lkey,
    const uint64_t rbuf, unsigned rkey, size_t localBufLen);
+extern int IBVSocket_postWriteAsync(IBVSocket* _this, const char* buf, size_t bufLen,
+   unsigned lkey, uint64_t rbuf, unsigned rkey, size_t localBufLen, uint64_t* outWRID);
+extern int IBVSocket_postReadAsync(IBVSocket* _this, const char* buf, size_t bufLen,
+   unsigned lkey, uint64_t rbuf, unsigned rkey, size_t localBufLen, uint64_t* outWRID);
+extern int IBVSocket_consumeSendCompletion(IBVSocket* _this, uint64_t expectedWRID);
+extern int IBVSocket_drainSendCompletion(IBVSocket* _this);
 #endif /* BEEGFS_NVFS */
 
 extern ssize_t IBVSocket_recv(IBVSocket* _this, char* buf, size_t bufLen, int flags);
@@ -66,6 +72,9 @@ extern bool IBVSocket_checkDelayedEvents(IBVSocket* _this);
 // getters & setters
 extern bool IBVSocket_getSockValid(IBVSocket* _this);
 extern int IBVSocket_getRecvCompletionFD(IBVSocket* _this);
+#ifdef BEEGFS_NVFS
+extern int IBVSocket_getSendCompletionFD(IBVSocket* _this);
+#endif /* BEEGFS_NVFS */
 extern int IBVSocket_getConnManagerFD(IBVSocket* _this);
 extern void IBVSocket_setTypeOfService(IBVSocket* _this, uint8_t typeOfService);
 extern void IBVSocket_setTimeouts(IBVSocket* _this, int connectMS, int flowSendMS,
@@ -82,5 +91,3 @@ struct IBVCommConfig
    unsigned bufSize; // size of each buffer
    uint8_t serviceLevel;
 };
-
-

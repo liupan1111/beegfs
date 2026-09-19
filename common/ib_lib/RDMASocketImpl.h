@@ -21,6 +21,13 @@ class RDMASocketImpl : public RDMASocket
          unsigned rkey, size_t localBufLen = 0) override;
       virtual ssize_t read(const void *buf, size_t len, unsigned lkey, const uint64_t rbuf,
          unsigned rkey, size_t localBufLen = 0) override;
+      virtual ssize_t postAsyncRead(const void* buf, size_t len, unsigned lkey, uint64_t rbuf,
+         unsigned rkey, size_t localBufLen, uint64_t* outWRID) override;
+      virtual ssize_t postAsyncWrite(const void* buf, size_t len, unsigned lkey, uint64_t rbuf,
+         unsigned rkey, size_t localBufLen, uint64_t* outWRID) override;
+      virtual int consumeSendCompletion(uint64_t expectedWRID) override;
+      virtual int drainSendCompletion() override;
+      virtual int getSendCompletionFD() const override;
 #endif /* BEEGFS_NVFS */
 
       virtual ssize_t send(const void *buf, size_t len, int flags) override;

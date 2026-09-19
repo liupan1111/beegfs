@@ -132,6 +132,9 @@ struct IBVCommContext
 
    struct ibv_comp_channel*   recvCompChannel; // recv completion event channel
    unsigned                   numUnackedRecvCompChannelEvents; // number of gathered events
+#ifdef BEEGFS_NVFS
+   struct ibv_comp_channel*   sendCompChannel; // send completion event channel
+#endif /* BEEGFS_NVFS */
 
    struct ibv_cq*             recvCQ; // recv completion queue
    struct ibv_cq*             sendCQ; // send completion queue
@@ -196,5 +199,4 @@ struct IBVSocket
    IBVTimeoutConfig              timeoutCfg;
    IPAddress                     bindIP;
 };
-
 

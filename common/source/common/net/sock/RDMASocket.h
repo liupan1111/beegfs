@@ -32,6 +32,14 @@ class RDMASocket : public PooledSocket
       virtual void setTypeOfService(uint8_t typeOfService) = 0;
 
       virtual void setConnectionRejectionRate(unsigned rate) = 0;
+
+#ifdef BEEGFS_NVFS
+      virtual ssize_t postAsyncRead(const void* buf, size_t len, unsigned lkey, uint64_t rbuf,
+         unsigned rkey, size_t localBufLen, uint64_t* outWRID) = 0;
+      virtual ssize_t postAsyncWrite(const void* buf, size_t len, unsigned lkey, uint64_t rbuf,
+         unsigned rkey, size_t localBufLen, uint64_t* outWRID) = 0;
+      virtual int consumeSendCompletion(uint64_t expectedWRID) = 0;
+      virtual int drainSendCompletion() = 0;
+      virtual int getSendCompletionFD() const = 0;
+#endif /* BEEGFS_NVFS */
 };
-
-
