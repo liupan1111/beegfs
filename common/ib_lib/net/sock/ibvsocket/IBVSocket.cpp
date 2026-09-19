@@ -993,6 +993,9 @@ bool __IBVSocket_createCommContext(IBVSocket* _this, struct rdma_cm_id* cm_id,
    struct ibv_qp_init_attr qpInitAttr;
    int createQPRes;
    unsigned i;
+#ifdef BEEGFS_NVFS
+   int sendChannelFlags;
+#endif
 
 
    // sanity checks
@@ -1121,7 +1124,7 @@ bool __IBVSocket_createCommContext(IBVSocket* _this, struct rdma_cm_id* cm_id,
       goto err_cleanup;
    }
 
-   int sendChannelFlags = fcntl(commContext->sendCompChannel->fd, F_GETFL, 0);
+   sendChannelFlags = fcntl(commContext->sendCompChannel->fd, F_GETFL, 0);
    if(sendChannelFlags == -1 ||
       fcntl(commContext->sendCompChannel->fd, F_SETFL, sendChannelFlags | O_NONBLOCK) == -1)
    {

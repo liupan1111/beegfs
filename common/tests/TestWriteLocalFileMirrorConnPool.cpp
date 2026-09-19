@@ -26,6 +26,17 @@ class PoolTestSocket : public Socket
       virtual Socket* accept(struct sockaddr_storage*, socklen_t*) { return NULL; }
       virtual void shutdown() {}
       virtual void shutdownAndRecvDisconnect(int) {}
+#ifdef BEEGFS_NVFS
+      virtual ssize_t read(const void*, size_t, uint32_t, const uint64_t, uint32_t, size_t)
+      {
+         return -1;
+      }
+
+      virtual ssize_t write(const void*, size_t, uint32_t, const uint64_t, uint32_t, size_t)
+      {
+         return -1;
+      }
+#endif
       virtual ssize_t send(const void*, size_t len, int) { return len; }
       virtual ssize_t sendto(const void*, size_t len, int, const SocketAddress*) { return len; }
       virtual ssize_t recv(void*, size_t, int) { return 0; }
