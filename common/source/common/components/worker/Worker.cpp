@@ -7,7 +7,7 @@
 #include <sys/epoll.h>
 #include <unistd.h>
 
-#define WORKER_IO_EPOLL_EVENTS 3
+#define WORKER_IO_EPOLL_EVENTS (3 + IOWorkerAsyncContext::DEFAULT_ASYNC_REQUEST_SLOTS)
 #define WORKER_IO_DEQUEUE_BURST 64
 
 __thread IOWorkerContext* Worker::currentIOWorkerContext = NULL;
@@ -24,7 +24,8 @@ Worker::Worker(const std::string& workerID, MultiWorkQueue* workQueue, QueueWork
       workType(workType),
       ioContext(NULL),
       asyncContext(),
-      personalWorkQueue(new PersonalWorkQueue() )
+      personalWorkQueue(new PersonalWorkQueue() ),
+      ioEpollFD(-1)
 {
    HighResolutionStatsTk::resetStats(&this->stats);
 }
@@ -106,6 +107,8 @@ int Worker::initIOEpollFD(IOEventSource* highPrioSource, IOEventSource* requestS
 
 void Worker::waitForIOWorks(int epollFD, WorkList& outWorks)
 {
+   cleanupRetiredSendCQSources();
+
    for(;;)
    {
       unsigned availableSlots = asyncContext->getNumAvailableRequestSlots();
@@ -153,11 +156,22 @@ void Worker::waitForIOWorks(int epollFD, WorkList& outWorks)
                gotRequest = true;
          }
          else
+         if(source->type == IOEventSource::AIO)
          {
             asyncContext->drainEventFD();
             asyncContext->reapCompletions();
          }
+         else
+         if(source->request)
+         {
+            source->request->onSendCQComplete();
+
+            if(source->request->isComplete())
+               asyncContext->completeRequest(source->request);
+         }
       }
+
+      cleanupRetiredSendCQSources();
 
       availableSlots = asyncContext->getNumAvailableRequestSlots();
       if(!getSelfTerminate() && availableSlots && gotHighPrio)
@@ -176,6 +190,55 @@ void Worker::waitForIOWorks(int epollFD, WorkList& outWorks)
       if(!outWorks.empty() )
          return;
    }
+}
+
+void Worker::registerSendCQSource(AsyncIORequest* request)
+{
+   const int sendCQFD = request->getSendCompletionFD();
+   if(sendCQFD == -1)
+      return;
+
+   IOEventSource* source = new IOEventSource(IOEventSource::SEND_CQ, NULL, request, sendCQFD);
+   struct epoll_event event;
+   event.events = EPOLLIN;
+   event.data.ptr = source;
+
+   if(epoll_ctl(ioEpollFD, EPOLL_CTL_ADD, sendCQFD, &event) == -1)
+   {
+      delete source;
+      throw WorkerException("Unable to add send CQ fd: " + System::getErrString());
+   }
+
+   sendCQSources[request] = source;
+}
+
+void Worker::unregisterSendCQSource(AsyncIORequest* request)
+{
+   std::map<AsyncIORequest*, IOEventSource*>::iterator iter = sendCQSources.find(request);
+   if(iter == sendCQSources.end())
+      return;
+
+   IOEventSource* source = iter->second;
+   if(epoll_ctl(ioEpollFD, EPOLL_CTL_DEL, source->fd, NULL) == -1 && errno != ENOENT)
+      log.logErr("Unable to remove send CQ fd: " + System::getErrString());
+
+   source->request = NULL;
+   retiredSendCQSources.push_back(source);
+   sendCQSources.erase(iter);
+}
+
+void Worker::cleanupRetiredSendCQSources()
+{
+   for(std::vector<IOEventSource*>::iterator iter = retiredSendCQSources.begin();
+      iter != retiredSendCQSources.end(); iter++)
+      delete *iter;
+
+   retiredSendCQSources.clear();
+}
+
+void Worker::onAsyncRequestComplete(void* context, AsyncIORequest* request)
+{
+   static_cast<Worker*>(context)->unregisterSendCQSource(request);
 }
 
 void Worker::drainIOQueue(RteRingQueue* queue, unsigned maxWorks, WorkList& outWorks)
@@ -207,7 +270,7 @@ void Worker::workLoop(QueueWorkType workType)
    LOG(WORKQUEUES, DEBUG, "Ready", ("TID", System::getTID()), workType);
 
    const bool isIOWorkType = workType == QueueWorkType_IO;
-   int ioEpollFD = -1;
+   ioEpollFD = -1;
    IOEventSource highPrioSource(IOEventSource::QUEUE);
    IOEventSource requestSource(IOEventSource::QUEUE);
    IOEventSource aioSource(IOEventSource::AIO);
@@ -215,6 +278,7 @@ void Worker::workLoop(QueueWorkType workType)
    if(isIOWorkType)
    {
       asyncContext.reset(new IOWorkerAsyncContext(ioContext));
+      asyncContext->setRequestCompletionHandler(onAsyncRequestComplete, this);
 
       highPrioSource.queue = ioContext->highPrioQueue.get();
       requestSource.queue = ioContext->requestQueue.get();
@@ -249,6 +313,8 @@ void Worker::workLoop(QueueWorkType workType)
 
                if(!request->start() || request->isComplete())
                   asyncContext->completeRequest(request);
+               else
+                  registerSendCQSource(request);
 
                continue;
             }
@@ -320,9 +386,10 @@ void Worker::workLoop(QueueWorkType workType)
    {
       ioContext->writeMirrorConnPool.shutdown();
       currentIOWorkerContext = NULL;
+      asyncContext.reset();
+      cleanupRetiredSendCQSources();
       close(ioEpollFD);
-
-   asyncContext.reset();
+      ioEpollFD = -1;
    }
 }
 

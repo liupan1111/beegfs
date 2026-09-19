@@ -9,6 +9,8 @@
 #include <common/components/ComponentInitException.h>
 #include <common/threading/PThread.h>
 
+#include <map>
+#include <vector>
 
 #define WORKER_BUFIN_SIZE     (1024*1024*4)
 #define WORKER_BUFOUT_SIZE    WORKER_BUFIN_SIZE
@@ -49,22 +51,30 @@ class Worker : public PThread
       PersonalWorkQueue* personalWorkQueue;
 
       HighResolutionStats stats;
+      int ioEpollFD;
 
       struct IOEventSource
       {
          enum Type
          {
             QUEUE,
-            AIO
+            AIO,
+            SEND_CQ
          };
 
          Type type;
          RteRingQueue* queue;
+         AsyncIORequest* request;
+         int fd;
 
-         IOEventSource(Type type, RteRingQueue* queue = NULL) : type(type), queue(queue)
+         IOEventSource(Type type, RteRingQueue* queue = NULL, AsyncIORequest* request = NULL,
+            int fd = -1) : type(type), queue(queue), request(request), fd(fd)
          {
          }
       };
+
+      std::map<AsyncIORequest*, IOEventSource*> sendCQSources;
+      std::vector<IOEventSource*> retiredSendCQSources;
 
       virtual void run();
 
@@ -73,6 +83,10 @@ class Worker : public PThread
          IOEventSource* aioSource);
       void waitForIOWorks(int epollFD, WorkList& outWorks);
       void drainIOQueue(RteRingQueue* queue, unsigned maxWorks, WorkList& outWorks);
+      void registerSendCQSource(AsyncIORequest* request);
+      void unregisterSendCQSource(AsyncIORequest* request);
+      void cleanupRetiredSendCQSources();
+      static void onAsyncRequestComplete(void* context, AsyncIORequest* request);
       void waitForWorkByType(HighResolutionStats& newStats, PersonalWorkQueue* personalWorkQueue,
          QueueWorkType workType, WorkList& outWorks);
 

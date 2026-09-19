@@ -136,7 +136,9 @@ IOWorkerAsyncContext::IOWorkerAsyncContext(IOWorkerContext* workerContext) :
    aioContext(0),
    aioEventFD(-1),
    workerContext(workerContext),
-   bufferPool(DEFAULT_ASYNC_REQUEST_SLOTS, DEFAULT_BUFFER_SIZE, DEFAULT_BUFFER_ALIGNMENT)
+   bufferPool(DEFAULT_ASYNC_REQUEST_SLOTS, DEFAULT_BUFFER_SIZE, DEFAULT_BUFFER_ALIGNMENT),
+   requestCompletionHandler(NULL),
+   requestCompletionContext(NULL)
 {
    aioEventFD = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
    if(aioEventFD == -1)
@@ -170,6 +172,10 @@ void IOWorkerAsyncContext::addRequest(AsyncIORequest* request)
 void IOWorkerAsyncContext::completeRequest(AsyncIORequest* request)
 {
    activeRequests.remove(request);
+
+   if(requestCompletionHandler)
+      requestCompletionHandler(requestCompletionContext, request);
+
    request->release();
 }
 
@@ -179,6 +185,10 @@ void IOWorkerAsyncContext::cancelAllRequests()
    {
       AsyncIORequest* request = activeRequests.front();
       activeRequests.remove(request);
+
+      if(requestCompletionHandler)
+         requestCompletionHandler(requestCompletionContext, request);
+
       request->cancel();
       request->release();
    }

@@ -36,6 +36,11 @@ class AsyncIORequest
 
       virtual bool start() = 0;
       virtual void onAIOComplete(const io_event& event) = 0;
+      virtual int getSendCompletionFD() const
+      {
+         return -1;
+      }
+      virtual void onSendCQComplete() {}
       virtual bool isComplete() const = 0;
       virtual void cancel() {}
       virtual void release()
@@ -100,6 +105,8 @@ class AsyncIOBufferPool
 class IOWorkerAsyncContext
 {
    public:
+      typedef void (*RequestCompletionHandler)(void* context, AsyncIORequest* request);
+
       static const unsigned DEFAULT_AIO_QUEUE_DEPTH = 128;
       static const size_t DEFAULT_BUFFER_SIZE = 1024 * 1024;
       static const size_t DEFAULT_BUFFER_ALIGNMENT = 4096;
@@ -136,6 +143,11 @@ class IOWorkerAsyncContext
       void addRequest(AsyncIORequest* request);
       void completeRequest(AsyncIORequest* request);
       void cancelAllRequests();
+      void setRequestCompletionHandler(RequestCompletionHandler handler, void* context)
+      {
+         requestCompletionHandler = handler;
+         requestCompletionContext = context;
+      }
 
       void drainEventFD();
       void reapCompletions();
@@ -157,4 +169,6 @@ class IOWorkerAsyncContext
       IOWorkerContext* workerContext;
       AsyncIORequestList activeRequests;
       AsyncIOBufferPool bufferPool;
+      RequestCompletionHandler requestCompletionHandler;
+      void* requestCompletionContext;
 };

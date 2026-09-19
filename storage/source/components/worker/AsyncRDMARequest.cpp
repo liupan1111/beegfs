@@ -5,6 +5,7 @@
 #include <app/App.h>
 #include <common/components/streamlistenerv2/IncomingPreprocessedMsgWork.h>
 #include <common/net/message/session/rw/WriteLocalFileRDMARespMsg.h>
+#include <common/net/sock/RDMASocket.h>
 #include <common/net/sock/Socket.h>
 #include <common/storage/quota/ExceededQuotaPerTarget.h>
 #include <common/storage/quota/ExceededQuotaStore.h>
@@ -97,6 +98,7 @@ AsyncRDMARequest::AsyncRDMARequest(IOWorkerAsyncContext& asyncContext,
    asyncContext(asyncContext),
    work(work),
    sock(sock),
+   rdmaSocket(dynamic_cast<RDMASocket*>(sock)),
    stats(stats),
    params(params),
    phase(INIT),
@@ -110,7 +112,9 @@ AsyncRDMARequest::AsyncRDMARequest(IOWorkerAsyncContext& asyncContext,
    completedBytes(0),
    fileOffset(params.offset),
    currentLen(0),
-   bufferOffset(0)
+   bufferOffset(0),
+   rdmaLen(0),
+   rdmaWRID(0)
 {
    memset(&iocb, 0, sizeof(iocb));
 }
@@ -159,33 +163,15 @@ void AsyncRDMARequest::onAIOComplete(const io_event& event)
          return;
       }
 
-      if(aioRes > 0 && !rdmaWriteToClient(aioRes))
+      if(aioRes > 0 && !postRDMAWrite(aioRes))
       {
          finishCommunicationError();
          return;
       }
 
-      completedBytes += aioRes;
-      remaining -= aioRes;
-      fileOffset += aioRes;
-
-      sessionLocalFile->setOffset(params.offset + completedBytes);
-      sessionLocalFile->incReadCounter(aioRes);
-      stats->incVals.diskReadBytes += aioRes;
-
-      if(aioRes != (ssize_t)currentLen || remaining == 0)
-      {
+      if(aioRes == 0)
          finishReadLength(completedBytes);
-         return;
-      }
 
-      if(!advanceRemote(aioRes))
-      {
-         finishCommunicationError();
-         return;
-      }
-
-      submitNext();
       return;
    }
 
@@ -231,6 +217,32 @@ bool AsyncRDMARequest::isComplete() const
    return phase == DONE;
 }
 
+int AsyncRDMARequest::getSendCompletionFD() const
+{
+   return rdmaSocket ? rdmaSocket->getSendCompletionFD() : -1;
+}
+
+void AsyncRDMARequest::onSendCQComplete()
+{
+   if(phase != RDMA_READ_PENDING && phase != RDMA_WRITE_PENDING)
+   {
+      if(rdmaSocket->drainSendCompletion() < 0)
+         finishCommunicationError();
+
+      return;
+   }
+
+   int completionRes = rdmaSocket->consumeSendCompletion(rdmaWRID);
+   if(completionRes < 0)
+   {
+      finishCommunicationError();
+      return;
+   }
+
+   if(completionRes)
+      completePendingRDMA();
+}
+
 void AsyncRDMARequest::cancel()
 {
    finishAndInvalidateSocket();
@@ -238,6 +250,12 @@ void AsyncRDMARequest::cancel()
 
 bool AsyncRDMARequest::setup()
 {
+   if(!rdmaSocket)
+   {
+      finishError(FhgfsOpsErr_COMMUNICATION);
+      return false;
+   }
+
    FhgfsOpsErr validateErr = FhgfsOpsErr_SUCCESS;
    if(!validateRequest(validateErr))
    {
@@ -392,13 +410,13 @@ bool AsyncRDMARequest::submitRead()
 
 bool AsyncRDMARequest::submitWrite()
 {
-   if(!rdmaReadFromClient(currentLen))
+   if(!postRDMARead(currentLen))
    {
       finishCommunicationError();
       return true;
    }
 
-   return submitWriteAIO();
+   return true;
 }
 
 bool AsyncRDMARequest::submitWriteAIO()
@@ -420,6 +438,79 @@ bool AsyncRDMARequest::submitWriteAIO()
 
    phase = AIO_PENDING;
    return true;
+}
+
+bool AsyncRDMARequest::postRDMAWrite(size_t length)
+{
+   ssize_t postRes = rdmaSocket->postAsyncWrite(buffer->data, length, 0,
+      remoteBuf + remoteOff, params.rdmaInfo.key, buffer->length, &rdmaWRID);
+   if(postRes < 0)
+      return false;
+
+   rdmaLen = length;
+   phase = RDMA_WRITE_PENDING;
+
+   if(postRes)
+      completePendingRDMA();
+
+   return true;
+}
+
+bool AsyncRDMARequest::postRDMARead(size_t length)
+{
+   ssize_t postRes = rdmaSocket->postAsyncRead(buffer->data, length, 0,
+      remoteBuf + remoteOff, params.rdmaInfo.key, buffer->length, &rdmaWRID);
+   if(postRes < 0)
+      return false;
+
+   rdmaLen = length;
+   phase = RDMA_READ_PENDING;
+
+   if(postRes)
+      completePendingRDMA();
+
+   return true;
+}
+
+void AsyncRDMARequest::completePendingRDMA()
+{
+   Phase completedPhase = phase;
+   phase = INIT;
+
+   if(completedPhase == RDMA_WRITE_PENDING)
+      completeRDMAWrite();
+   else
+      completeRDMARead();
+}
+
+void AsyncRDMARequest::completeRDMAWrite()
+{
+   completedBytes += rdmaLen;
+   remaining -= rdmaLen;
+   fileOffset += rdmaLen;
+
+   sessionLocalFile->setOffset(params.offset + completedBytes);
+   sessionLocalFile->incReadCounter(rdmaLen);
+   stats->incVals.diskReadBytes += rdmaLen;
+
+   if(rdmaLen != currentLen || remaining == 0)
+   {
+      finishReadLength(completedBytes);
+      return;
+   }
+
+   if(!advanceRemote(rdmaLen))
+   {
+      finishCommunicationError();
+      return;
+   }
+
+   submitNext();
+}
+
+void AsyncRDMARequest::completeRDMARead()
+{
+   submitWriteAIO();
 }
 
 bool AsyncRDMARequest::initRemote()
@@ -600,38 +691,6 @@ bool AsyncRDMARequest::sendWriteResponse(int64_t result)
    {
       LogContext("AsyncRDMARequest").log(Log_WARNING,
          std::string("Unable to send RDMA write response: ") + e.what());
-      return false;
-   }
-}
-
-bool AsyncRDMARequest::rdmaWriteToClient(size_t length)
-{
-   try
-   {
-      ssize_t writeRes = sock->write(buffer->data, length, 0,
-         remoteBuf + remoteOff, params.rdmaInfo.key, buffer->length);
-      return writeRes == (ssize_t)length;
-   }
-   catch(SocketException& e)
-   {
-      LogContext("AsyncRDMARequest").log(Log_WARNING,
-         std::string("Unable to RDMA-write file data to client: ") + e.what());
-      return false;
-   }
-}
-
-bool AsyncRDMARequest::rdmaReadFromClient(size_t length)
-{
-   try
-   {
-      ssize_t readRes = sock->read(buffer->data, length, 0,
-         remoteBuf + remoteOff, params.rdmaInfo.key, buffer->length);
-      return readRes == (ssize_t)length;
-   }
-   catch(SocketException& e)
-   {
-      LogContext("AsyncRDMARequest").log(Log_WARNING,
-         std::string("Unable to RDMA-read file data from client: ") + e.what());
       return false;
    }
 }

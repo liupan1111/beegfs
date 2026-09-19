@@ -15,6 +15,7 @@
 #include <string>
 
 class IncomingPreprocessedMsgWork;
+class RDMASocket;
 class SessionLocalFile;
 class Socket;
 struct io_event;
@@ -53,6 +54,8 @@ class AsyncRDMARequest : public AsyncIORequest
 
       bool start();
       void onAIOComplete(const io_event& event);
+      int getSendCompletionFD() const override;
+      void onSendCQComplete() override;
       bool isComplete() const;
       void cancel();
       void release() override;
@@ -67,12 +70,15 @@ class AsyncRDMARequest : public AsyncIORequest
       {
          INIT,
          AIO_PENDING,
+         RDMA_READ_PENDING,
+         RDMA_WRITE_PENDING,
          DONE
       };
 
       IOWorkerAsyncContext& asyncContext;
       IncomingPreprocessedMsgWork* work;
       Socket* sock;
+      RDMASocket* rdmaSocket;
       HighResolutionStats* stats;
       Params params;
       Phase phase;
@@ -92,12 +98,19 @@ class AsyncRDMARequest : public AsyncIORequest
       off_t fileOffset;
       size_t currentLen;
       size_t bufferOffset;
+      size_t rdmaLen;
+      uint64_t rdmaWRID;
 
       bool setup();
       bool submitNext();
       bool submitRead();
       bool submitWrite();
       bool submitWriteAIO();
+      bool postRDMAWrite(size_t length);
+      bool postRDMARead(size_t length);
+      void completePendingRDMA();
+      void completeRDMAWrite();
+      void completeRDMARead();
 
       bool initRemote();
       bool advanceRemote(size_t length);
@@ -113,8 +126,6 @@ class AsyncRDMARequest : public AsyncIORequest
 
       bool sendReadLength(int64_t lengthInfo);
       bool sendWriteResponse(int64_t result);
-      bool rdmaWriteToClient(size_t length);
-      bool rdmaReadFromClient(size_t length);
 
       bool validateRequest(FhgfsOpsErr& outErr) const;
       bool validateRDMABuffers() const;
