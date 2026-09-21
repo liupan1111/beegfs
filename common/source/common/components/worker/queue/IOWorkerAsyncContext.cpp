@@ -170,7 +170,7 @@ void IOWorkerAsyncContext::addRequest(AsyncIORequest* request)
 void IOWorkerAsyncContext::completeRequest(AsyncIORequest* request)
 {
    activeRequests.remove(request);
-   delete request;
+   request->release();
 }
 
 void IOWorkerAsyncContext::cancelAllRequests()
@@ -180,7 +180,7 @@ void IOWorkerAsyncContext::cancelAllRequests()
       AsyncIORequest* request = activeRequests.front();
       activeRequests.remove(request);
       request->cancel();
-      delete request;
+      request->release();
    }
 }
 

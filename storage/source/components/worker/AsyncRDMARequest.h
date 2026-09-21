@@ -18,6 +18,7 @@ class IncomingPreprocessedMsgWork;
 class SessionLocalFile;
 class Socket;
 struct io_event;
+class AsyncRDMARequestPool;
 
 class AsyncRDMARequest : public AsyncIORequest
 {
@@ -45,16 +46,23 @@ class AsyncRDMARequest : public AsyncIORequest
          RdmaInfo rdmaInfo;
       };
 
-      AsyncRDMARequest(IOWorkerAsyncContext& asyncContext, IncomingPreprocessedMsgWork* work,
-         Socket* sock, HighResolutionStats* stats, const Params& params);
+      static AsyncRDMARequest* create(IOWorkerAsyncContext& asyncContext,
+         IncomingPreprocessedMsgWork* work, Socket* sock, HighResolutionStats* stats,
+         const Params& params);
       ~AsyncRDMARequest();
 
       bool start();
       void onAIOComplete(const io_event& event);
       bool isComplete() const;
       void cancel();
+      void release() override;
 
    private:
+      friend class AsyncRDMARequestPool;
+
+      AsyncRDMARequest(IOWorkerAsyncContext& asyncContext, IncomingPreprocessedMsgWork* work,
+         Socket* sock, HighResolutionStats* stats, const Params& params);
+
       enum Phase
       {
          INIT,

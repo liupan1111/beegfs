@@ -132,7 +132,7 @@ class ReadLocalFileRDMAMsgSender : public ReadLocalFileRDMAMsg
          params.quotaGroupID = 0;
          params.rdmaInfo = *getRdmaInfo();
 
-         return new AsyncRDMARequest(asyncContext, work, sock, stats, params);
+         return AsyncRDMARequest::create(asyncContext, work, sock, stats, params);
       }
 };
 
@@ -140,4 +140,3 @@ typedef ReadLocalFileMsgExBase<ReadLocalFileRDMAMsgSender,
                                ReadLocalFileRDMAMsgSender::ReadState> ReadLocalFileRDMAMsgEx;
 
 #endif /* BEEGFS_NVFS */
-

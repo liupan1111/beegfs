@@ -21,8 +21,75 @@
 #include <storage/StorageTargets.h>
 
 #include <errno.h>
+#include <array>
+#include <assert.h>
 #include <libaio.h>
+#include <new>
 #include <string.h>
+#include <type_traits>
+
+class AsyncRDMARequestPool
+{
+   public:
+      AsyncRDMARequestPool() : numFreeRequests(DEFAULT_NUM_REQUESTS)
+      {
+         for(size_t i = 0; i < DEFAULT_NUM_REQUESTS; i++)
+            freeRequests[i] = reinterpret_cast<AsyncRDMARequest*>(&requestStorage[i]);
+      }
+
+      ~AsyncRDMARequestPool()
+      {
+         assert(numFreeRequests == DEFAULT_NUM_REQUESTS);
+      }
+
+      AsyncRDMARequest* acquire(IOWorkerAsyncContext& asyncContext,
+         IncomingPreprocessedMsgWork* work, Socket* sock, HighResolutionStats* stats,
+         const AsyncRDMARequest::Params& params)
+      {
+         assert(numFreeRequests);
+         if(!numFreeRequests)
+            return NULL;
+
+         AsyncRDMARequest* request = freeRequests[--numFreeRequests];
+         try
+         {
+            return new(request) AsyncRDMARequest(asyncContext, work, sock, stats, params);
+         }
+         catch(...)
+         {
+            freeRequests[numFreeRequests++] = request;
+            throw;
+         }
+      }
+
+      void release(AsyncRDMARequest* request)
+      {
+         assert(request);
+         assert(numFreeRequests < DEFAULT_NUM_REQUESTS);
+
+         request->~AsyncRDMARequest();
+         freeRequests[numFreeRequests++] = request;
+      }
+
+   private:
+      static const size_t DEFAULT_NUM_REQUESTS =
+         IOWorkerAsyncContext::DEFAULT_ASYNC_REQUEST_SLOTS;
+      typedef std::aligned_storage<sizeof(AsyncRDMARequest),
+         alignof(AsyncRDMARequest)>::type RequestStorage;
+
+      std::array<RequestStorage, DEFAULT_NUM_REQUESTS> requestStorage;
+      std::array<AsyncRDMARequest*, DEFAULT_NUM_REQUESTS> freeRequests;
+      size_t numFreeRequests;
+};
+
+thread_local AsyncRDMARequestPool asyncRDMARequestPool;
+
+AsyncRDMARequest* AsyncRDMARequest::create(IOWorkerAsyncContext& asyncContext,
+   IncomingPreprocessedMsgWork* work, Socket* sock, HighResolutionStats* stats,
+   const Params& params)
+{
+   return asyncRDMARequestPool.acquire(asyncContext, work, sock, stats, params);
+}
 
 AsyncRDMARequest::AsyncRDMARequest(IOWorkerAsyncContext& asyncContext,
    IncomingPreprocessedMsgWork* work, Socket* sock, HighResolutionStats* stats,
@@ -54,6 +121,11 @@ AsyncRDMARequest::~AsyncRDMARequest()
       asyncContext.releaseBuffer(buffer);
 
    delete work;
+}
+
+void AsyncRDMARequest::release()
+{
+   asyncRDMARequestPool.release(this);
 }
 
 bool AsyncRDMARequest::start()

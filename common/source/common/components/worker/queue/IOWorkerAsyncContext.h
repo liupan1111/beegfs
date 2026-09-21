@@ -38,6 +38,10 @@ class AsyncIORequest
       virtual void onAIOComplete(const io_event& event) = 0;
       virtual bool isComplete() const = 0;
       virtual void cancel() {}
+      virtual void release()
+      {
+         delete this;
+      }
 
       bool isInActiveList() const
       {

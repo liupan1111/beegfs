@@ -111,7 +111,7 @@ class WriteLocalFileRDMAMsgSender : public WriteLocalFileRDMAMsg
          params.quotaGroupID = getGroupID();
          params.rdmaInfo = *getRdmaInfo();
 
-         return new AsyncRDMARequest(asyncContext, work, sock, stats, params);
+         return AsyncRDMARequest::create(asyncContext, work, sock, stats, params);
       }
 };
 
@@ -119,4 +119,3 @@ typedef WriteLocalFileMsgExBase<WriteLocalFileRDMAMsgSender,
                                 WriteLocalFileRDMAMsgSender::WriteState> WriteLocalFileRDMAMsgEx;
 
 #endif /* BEEGFS_NVFS */
-
