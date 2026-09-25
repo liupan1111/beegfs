@@ -8,6 +8,12 @@
 
 class Socket;
 
+enum class AsyncIOBackendType
+{
+   LIBAIO,
+   IO_URING
+};
+
 struct IOWorkerContext
 {
    uint16_t osdID;
@@ -19,6 +25,7 @@ struct IOWorkerContext
    std::unique_ptr<RteRingQueue> highPrioQueue;
    WriteLocalFileMirrorConnPool writeMirrorConnPool;
    size_t load;
+   AsyncIOBackendType asyncIOBackend;
 };
 
 struct IOWorkerResponse

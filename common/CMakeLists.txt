@@ -5,6 +5,7 @@ if(NOT PKG_CONFIG_FOUND)
 endif()
 
 pkg_check_modules(NL3ROUTE REQUIRED IMPORTED_TARGET libnl-route-3.0)
+pkg_check_modules(LIBURING REQUIRED IMPORTED_TARGET liburing)
 
 include_directories(
 	source
@@ -595,6 +596,7 @@ target_link_libraries(
 	beegfs-common
 	${NL3ROUTE_LIBRARIES}
 	aio
+	PkgConfig::LIBURING
 	ssl
 	crypto
 )

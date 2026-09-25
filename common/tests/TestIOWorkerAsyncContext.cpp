@@ -2,6 +2,9 @@
 
 #include <gtest/gtest.h>
 
+#include <map>
+#include <set>
+
 class TestAsyncIORequest : public AsyncIORequest
 {
    public:
@@ -21,7 +24,7 @@ class TestAsyncIORequest : public AsyncIORequest
          return true;
       }
 
-      void onAIOComplete(const io_event& event)
+      void onLocalIOComplete(int64_t result) override
       {
       }
 
@@ -71,6 +74,35 @@ TEST(IOWorkerAsyncContext, requestSlotsMatchBufferPool)
 
    for(size_t i = 0; i < buffers.size(); i++)
       context.releaseBuffer(buffers[i]);
+}
+
+TEST(IOWorkerAsyncContext, bufferIndexesAreStableAndUnique)
+{
+   IOWorkerAsyncContext context(NULL);
+   std::vector<AsyncIOBuffer*> buffers;
+   std::set<unsigned> indexes;
+   std::map<AsyncIOBuffer*, unsigned> assignedIndexes;
+
+   for(size_t i = 0; i < IOWorkerAsyncContext::DEFAULT_ASYNC_REQUEST_SLOTS; i++)
+   {
+      AsyncIOBuffer* buffer = context.acquireBuffer();
+      ASSERT_NE((AsyncIOBuffer*)NULL, buffer);
+      EXPECT_TRUE(indexes.insert(buffer->bufferIndex).second);
+      assignedIndexes[buffer] = buffer->bufferIndex;
+      buffers.push_back(buffer);
+   }
+
+   for(auto iter = buffers.rbegin(); iter != buffers.rend(); iter++)
+      context.releaseBuffer(*iter);
+
+   for(size_t i = 0; i < buffers.size(); i++)
+   {
+      AsyncIOBuffer* buffer = context.acquireBuffer();
+      ASSERT_NE((AsyncIOBuffer*)NULL, buffer);
+      EXPECT_EQ(assignedIndexes[buffer], buffer->bufferIndex);
+      EXPECT_LT(buffer->bufferIndex, IOWorkerAsyncContext::DEFAULT_ASYNC_REQUEST_SLOTS);
+      context.releaseBuffer(buffer);
+   }
 }
 
 TEST(IOWorkerAsyncContext, activeRequestsConsumeSlots)

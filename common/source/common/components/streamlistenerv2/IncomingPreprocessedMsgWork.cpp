@@ -69,7 +69,7 @@ class CompletedIncomingAsyncRequest : public AsyncIORequest
          return true;
       }
 
-      void onAIOComplete(const io_event& event)
+      void onLocalIOComplete(int64_t result)
       {
       }
 

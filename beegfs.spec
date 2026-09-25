@@ -59,6 +59,7 @@ Source: beegfs-%{BEEGFS_VERSION}.tar
 Vendor: ThinkParQ GmbH
 BuildRoot: %{_tmppath}/beegfs-root
 Epoch: %{EPOCH}
+BuildRequires: liburing-devel
 
 %description
 

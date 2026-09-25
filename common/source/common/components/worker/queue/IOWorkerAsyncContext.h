@@ -1,22 +1,23 @@
 #pragma once
 
 #include <common/Common.h>
+#include <common/components/worker/queue/IOWorkerContext.h>
 
-#include <libaio.h>
-
+#include <memory>
 #include <stdint.h>
+#include <sys/types.h>
 #include <vector>
 
-struct io_event;
 class IncomingPreprocessedMsgWork;
-struct IOWorkerContext;
+class AsyncIOBackend;
 
 struct AsyncIOBuffer
 {
    char* data;
    size_t length;
+   unsigned bufferIndex;
 
-   AsyncIOBuffer() : data(NULL), length(0)
+   AsyncIOBuffer() : data(NULL), length(0), bufferIndex(0)
    {
    }
 };
@@ -35,7 +36,7 @@ class AsyncIORequest
       AsyncIORequest& operator=(AsyncIORequest&&) = delete;
 
       virtual bool start() = 0;
-      virtual void onAIOComplete(const io_event& event) = 0;
+      virtual void onLocalIOComplete(int64_t result) = 0;
       virtual int getSendCompletionFD() const
       {
          return -1;
@@ -56,7 +57,13 @@ class AsyncIORequest
    private:
       AsyncIORequest* prev;
       AsyncIORequest* next;
-      bool inActiveList;
+   bool inActiveList;
+};
+
+struct AsyncIOCompletion
+{
+   AsyncIORequest* request;
+   int64_t result;
 };
 
 class AsyncIORequestList
@@ -95,6 +102,11 @@ class AsyncIOBufferPool
          return bufferSize;
       }
 
+      const std::vector<AsyncIOBuffer*>& getBuffers() const
+      {
+         return allBuffers;
+      }
+
    private:
       std::vector<AsyncIOBuffer*> allBuffers;
       std::vector<AsyncIOBuffer*> freeBuffers;
@@ -125,11 +137,6 @@ class IOWorkerAsyncContext
          return aioEventFD;
       }
 
-      io_context_t getAIOContext() const
-      {
-         return aioContext;
-      }
-
       AsyncIOBuffer* acquireBuffer()
       {
          return bufferPool.acquire();
@@ -143,6 +150,10 @@ class IOWorkerAsyncContext
       void addRequest(AsyncIORequest* request);
       void completeRequest(AsyncIORequest* request);
       void cancelAllRequests();
+      int submitRead(AsyncIORequest* request, int fd, AsyncIOBuffer* buffer, size_t length,
+         off_t offset);
+      int submitWrite(AsyncIORequest* request, int fd, AsyncIOBuffer* buffer,
+         size_t bufferOffset, size_t length, off_t offset);
       void setRequestCompletionHandler(RequestCompletionHandler handler, void* context)
       {
          requestCompletionHandler = handler;
@@ -164,11 +175,11 @@ class IOWorkerAsyncContext
       }
 
    private:
-      io_context_t aioContext;
       int aioEventFD;
       IOWorkerContext* workerContext;
       AsyncIORequestList activeRequests;
       AsyncIOBufferPool bufferPool;
+      std::unique_ptr<AsyncIOBackend> backend;
       RequestCompletionHandler requestCompletionHandler;
       void* requestCompletionContext;
 };
