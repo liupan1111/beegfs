@@ -24,7 +24,6 @@
 #include <errno.h>
 #include <array>
 #include <assert.h>
-#include <libaio.h>
 #include <new>
 #include <string.h>
 #include <type_traits>
@@ -116,7 +115,6 @@ AsyncRDMARequest::AsyncRDMARequest(IOWorkerAsyncContext& asyncContext,
    rdmaLen(0),
    rdmaWRID(0)
 {
-   memset(&iocb, 0, sizeof(iocb));
 }
 
 AsyncRDMARequest::~AsyncRDMARequest()
@@ -146,14 +144,14 @@ bool AsyncRDMARequest::start()
    return submitNext();
 }
 
-void AsyncRDMARequest::onAIOComplete(const io_event& event)
+void AsyncRDMARequest::onLocalIOComplete(int64_t result)
 {
    if(phase != AIO_PENDING)
       return;
 
    phase = INIT;
 
-   const ssize_t aioRes = event.res;
+   const ssize_t aioRes = result;
 
    if(isRead())
    {
@@ -390,17 +388,11 @@ bool AsyncRDMARequest::submitNext()
 
 bool AsyncRDMARequest::submitRead()
 {
-   memset(&iocb, 0, sizeof(iocb));
-   io_prep_pread(&iocb, *sessionLocalFile->getFD(), buffer->data, currentLen, fileOffset);
-   iocb.data = this;
-   io_set_eventfd(&iocb, asyncContext.getEventFD());
-
-   struct iocb* iocbs[] = { &iocb };
-   int submitRes = io_submit(asyncContext.getAIOContext(), 1, iocbs);
-   if(submitRes != 1)
+   int submitRes = asyncContext.submitRead(this, *sessionLocalFile->getFD(), buffer, currentLen,
+      fileOffset);
+   if(submitRes)
    {
-      int errCode = submitRes < 0 ? -submitRes : EIO;
-      finishError(FhgfsOpsErrTk::fromSysErr(errCode));
+      finishError(FhgfsOpsErrTk::fromSysErr(submitRes));
       return true;
    }
 
@@ -421,18 +413,11 @@ bool AsyncRDMARequest::submitWrite()
 
 bool AsyncRDMARequest::submitWriteAIO()
 {
-   memset(&iocb, 0, sizeof(iocb));
-   io_prep_pwrite(&iocb, *sessionLocalFile->getFD(), buffer->data + bufferOffset, currentLen,
-      fileOffset);
-   iocb.data = this;
-   io_set_eventfd(&iocb, asyncContext.getEventFD());
-
-   struct iocb* iocbs[] = { &iocb };
-   int submitRes = io_submit(asyncContext.getAIOContext(), 1, iocbs);
-   if(submitRes != 1)
+   int submitRes = asyncContext.submitWrite(this, *sessionLocalFile->getFD(), buffer,
+      bufferOffset, currentLen, fileOffset);
+   if(submitRes)
    {
-      int errCode = submitRes < 0 ? -submitRes : EIO;
-      finishWriteResult(-FhgfsOpsErrTk::fromSysErr(errCode));
+      finishWriteResult(-FhgfsOpsErrTk::fromSysErr(submitRes));
       return true;
    }
 

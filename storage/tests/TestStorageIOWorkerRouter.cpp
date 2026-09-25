@@ -27,7 +27,8 @@ static void drainAndDelete(IOWorkerContext* context)
 
 TEST(StorageIOWorkerRouter, rejectsTooFewWorkers)
 {
-   EXPECT_THROW(StorageIOWorkerRouter(4, 3), StorageIOWorkerRouterException);
+   EXPECT_THROW(StorageIOWorkerRouter(4, 3, AsyncIOBackendType::LIBAIO),
+      StorageIOWorkerRouterException);
 }
 
 TEST(StorageIOWorkerRouter, splitsWorkersByListener)
@@ -43,6 +44,17 @@ TEST(StorageIOWorkerRouter, splitsWorkersByListener)
    EXPECT_EQ(router.getWorkerContext(1, 3)->listenerIndex, 0u);
    EXPECT_EQ(router.getWorkerContext(1, 4)->listenerIndex, 1u);
    EXPECT_EQ(router.getWorkerContext(1, 7)->listenerIndex, 2u);
+}
+
+TEST(StorageIOWorkerRouter, propagatesAsyncIOBackendToWorkerContexts)
+{
+   StorageIOWorkerRouter router(1, 2, AsyncIOBackendType::IO_URING);
+   router.addOSD(1);
+
+   EXPECT_EQ(AsyncIOBackendType::IO_URING,
+      router.getWorkerContext(1, 0)->asyncIOBackend);
+   EXPECT_EQ(AsyncIOBackendType::IO_URING,
+      router.getWorkerContext(1, 1)->asyncIOBackend);
 }
 
 TEST(StorageIOWorkerRouter, responseContextsSpanAllOSDsForListener)

@@ -746,8 +746,11 @@ void App::streamListenersInit()
 void App::workersInit()
 {
    unsigned numWorkers = cfg->getTuneNumWorkers();
+   AsyncIOBackendType asyncIOBackend = cfg->getTuneAsyncIOBackend() == "io_uring"
+      ? AsyncIOBackendType::IO_URING : AsyncIOBackendType::LIBAIO;
 
-   this->ioWorkerRouter = new StorageIOWorkerRouter(numStreamListeners, numWorkers);
+   this->ioWorkerRouter = new StorageIOWorkerRouter(numStreamListeners, numWorkers,
+      asyncIOBackend);
 
    for(MultiWorkQueueMapIter iter = workQueueMap.begin(); iter != workQueueMap.end(); iter++)
       ioWorkerRouter->addOSD(iter->first);

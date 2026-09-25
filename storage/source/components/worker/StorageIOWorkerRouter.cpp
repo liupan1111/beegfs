@@ -4,8 +4,9 @@
 
 #include <algorithm>
 
-StorageIOWorkerRouter::StorageIOWorkerRouter(unsigned numListeners, unsigned numWorkersPerOSD) :
-   numListeners(numListeners), numWorkersPerOSD(numWorkersPerOSD)
+StorageIOWorkerRouter::StorageIOWorkerRouter(unsigned numListeners, unsigned numWorkersPerOSD,
+   AsyncIOBackendType asyncIOBackend) :
+   numListeners(numListeners), numWorkersPerOSD(numWorkersPerOSD), asyncIOBackend(asyncIOBackend)
 {
    if(!numListeners)
       throw StorageIOWorkerRouterException("numListeners must not be zero.");
@@ -36,6 +37,7 @@ void StorageIOWorkerRouter::addOSD(uint16_t osdID)
       context->highPrioQueue.reset(new RteRingQueue(prefix + "-high", DEFAULT_RING_CAPACITY,
          RING_F_SC_DEQ | RING_F_EXACT_SZ));
       context->load = 0;
+      context->asyncIOBackend = asyncIOBackend;
 
       context->osdID = osdID;
       context->workerIndex = workerIndex;

@@ -18,7 +18,6 @@ class IncomingPreprocessedMsgWork;
 class RDMASocket;
 class SessionLocalFile;
 class Socket;
-struct io_event;
 class AsyncRDMARequestPool;
 
 class AsyncRDMARequest : public AsyncIORequest
@@ -53,7 +52,7 @@ class AsyncRDMARequest : public AsyncIORequest
       ~AsyncRDMARequest();
 
       bool start();
-      void onAIOComplete(const io_event& event);
+      void onLocalIOComplete(int64_t result) override;
       int getSendCompletionFD() const override;
       void onSendCQComplete() override;
       bool isComplete() const;
@@ -86,7 +85,6 @@ class AsyncRDMARequest : public AsyncIORequest
 
       std::shared_ptr<SessionLocalFile> sessionLocalFile;
       AsyncIOBuffer* buffer;
-      struct iocb iocb;
 
       uint64_t remoteBuf;
       uint64_t remoteLen;

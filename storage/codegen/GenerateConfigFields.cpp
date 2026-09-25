@@ -29,6 +29,7 @@ int main()
    gen.field("tuneNumResyncGatherSlaves",     "6", CFGTYPE_UINT);
    gen.field("tuneUseAggressiveStreamPoll",   "false", CFGTYPE_BOOL);
    gen.field("tuneUsePerTargetWorkers",       "true", CFGTYPE_BOOL);
+   gen.field("tuneAsyncIOBackend",             "libaio", CFGTYPE_STRING);
    gen.field("tuneChunkBalanceQueueLimit",    "100000", CFGTYPE_UINT);
    gen.field("quotaEnableEnforcement",        "false", CFGTYPE_BOOL);
    gen.field("quotaDisableZfsSupport",        "false", CFGTYPE_BOOL);

@@ -18,7 +18,8 @@ class StorageIOWorkerRouter
    public:
       static const unsigned DEFAULT_RING_CAPACITY = 16;
 
-      StorageIOWorkerRouter(unsigned numListeners, unsigned numWorkersPerOSD);
+      StorageIOWorkerRouter(unsigned numListeners, unsigned numWorkersPerOSD,
+         AsyncIOBackendType asyncIOBackend = AsyncIOBackendType::LIBAIO);
       ~StorageIOWorkerRouter() {}
 
       void addOSD(uint16_t osdID);
@@ -44,6 +45,7 @@ class StorageIOWorkerRouter
 
       unsigned numListeners;
       unsigned numWorkersPerOSD;
+      AsyncIOBackendType asyncIOBackend;
       std::map<uint16_t, OSDWorkerContexts> osds;
 
       std::pair<unsigned, unsigned> getGroupRange(unsigned listenerIndex) const;

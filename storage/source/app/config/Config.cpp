@@ -61,6 +61,9 @@ void Config::applyConfigMap(bool enableException, bool addDashes)
       throw InvalidConfigException("Invalid sysTargetOfflineTimeoutSecs value "
             + std::to_string(this->sysTargetOfflineTimeoutSecs) + " (must be at least 30)");
    }
+
+   if(tuneAsyncIOBackend != "libaio" && tuneAsyncIOBackend != "io_uring")
+      throw InvalidConfigException("Invalid tuneAsyncIOBackend value: " + tuneAsyncIOBackend);
 }
 
 void Config::initImplicitVals()
